@@ -10,81 +10,131 @@ import (
 	"cosmossdk.io/math"
 )
 
-// formatCoin formats a sdk.Coin into a value-rendered string, using the
-// given metadata about the denom. It returns the formatted coin string, the
-// display denom, and an optional error.
+// DefaultSeparator is the default separator used between formatted coins
+const DefaultSeparator = ", "
+
+// ErrMetadataMismatch is returned when the number of coins doesn't match the number of metadata entries
+var ErrMetadataMismatch = fmt.Errorf("number of metadata entries must match number of coins")
+
+// formatCoin formats a single coin with its metadata into a human-readable string.
+// It returns the formatted string and any error encountered during formatting.
 func formatCoin(coin *basev1beta1.Coin, metadata *bankv1beta1.Metadata) (string, error) {
-	coinDenom := coin.Denom
-
-	// Return early if no display denom or display denom is the current coin denom.
-	if metadata == nil || metadata.Display == "" || coinDenom == metadata.Display {
-		vr, err := math.FormatDec(coin.Amount)
-		return vr + " " + coin.Denom, err
+	if coin == nil {
+		return "", fmt.Errorf("nil coin")
 	}
 
-	dispDenom := metadata.Display
-
-	// Find exponents of both denoms.
-	var coinExp, dispExp uint32
-	foundCoinExp, foundDispExp := false, false
-	for _, unit := range metadata.DenomUnits {
-		if coinDenom == unit.Denom {
-			coinExp = unit.Exponent
-			foundCoinExp = true
-		}
-		if dispDenom == unit.Denom {
-			dispExp = unit.Exponent
-			foundDispExp = true
-		}
+	// Handle cases without metadata or display denom
+	if shouldUseOriginalDenom(coin.Denom, metadata) {
+		return formatOriginalCoin(coin)
 	}
 
-	// If we didn't find either exponent, then we return early.
-	if !foundCoinExp || !foundDispExp {
-		vr, err := math.FormatInt(coin.Amount)
-		return vr + " " + coin.Denom, err
+	return formatWithMetadata(coin, metadata)
+}
+
+// FormatCoins formats multiple coins with their metadata into a sorted, human-readable string.
+// The metadata slice must have the same length as the coins slice, with matching indices.
+func FormatCoins(coins []*basev1beta1.Coin, metadata []*bankv1beta1.Metadata) (string, error) {
+	if len(coins) != len(metadata) {
+		return "", fmt.Errorf("%w: expected %d, got %d", 
+			ErrMetadataMismatch, len(coins), len(metadata))
 	}
 
-	dispAmount, err := math.LegacyNewDecFromStr(coin.Amount)
+	if len(coins) == 0 {
+		return "", nil
+	}
+
+	formatted, err := formatAllCoins(coins, metadata)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to format coins: %w", err)
 	}
 
-	if coinExp > dispExp {
-		dispAmount = dispAmount.Mul(math.LegacyNewDec(10).Power(uint64(coinExp - dispExp)))
-	} else {
-		dispAmount = dispAmount.Quo(math.LegacyNewDec(10).Power(uint64(dispExp - coinExp)))
+	sortFormattedCoins(formatted)
+	return strings.Join(formatted, DefaultSeparator), nil
+}
+
+// Helper functions
+
+func shouldUseOriginalDenom(coinDenom string, metadata *bankv1beta1.Metadata) bool {
+	return metadata == nil || metadata.Display == "" || coinDenom == metadata.Display
+}
+
+func formatOriginalCoin(coin *basev1beta1.Coin) (string, error) {
+	vr, err := math.FormatDec(coin.Amount)
+	if err != nil {
+		return "", fmt.Errorf("failed to format amount: %w", err)
+	}
+	return fmt.Sprintf("%s %s", vr, coin.Denom), nil
+}
+
+func formatWithMetadata(coin *basev1beta1.Coin, metadata *bankv1beta1.Metadata) (string, error) {
+	coinExp, dispExp, err := findExponents(coin.Denom, metadata.Display, metadata.DenomUnits)
+	if err != nil {
+		return formatOriginalCoin(coin)
+	}
+
+	dispAmount, err := calculateDisplayAmount(coin.Amount, coinExp, dispExp)
+	if err != nil {
+		return "", fmt.Errorf("failed to calculate display amount: %w", err)
 	}
 
 	vr, err := math.FormatDec(dispAmount.String())
-	return vr + " " + dispDenom, err
-}
-
-// formatCoins formats Coins into a value-rendered string, which uses
-// `formatCoin` separated by ", " (a comma and a space), and sorted
-// alphabetically by value-rendered denoms. It expects an array of metadata
-// (optionally nil), where each metadata at index `i` MUST match the coin denom
-// at the same index.
-func FormatCoins(coins []*basev1beta1.Coin, metadata []*bankv1beta1.Metadata) (string, error) {
-	if len(coins) != len(metadata) {
-		return "", fmt.Errorf("formatCoins expect one metadata for each coin; expected %d, got %d", len(coins), len(metadata))
+	if err != nil {
+		return "", fmt.Errorf("failed to format display amount: %w", err)
 	}
 
+	return fmt.Sprintf("%s %s", vr, metadata.Display), nil
+}
+
+func findExponents(coinDenom, dispDenom string, units []*bankv1beta1.DenomUnit) (coinExp, dispExp uint32, err error) {
+	var foundCoin, foundDisp bool
+
+	for _, unit := range units {
+		switch unit.Denom {
+		case coinDenom:
+			coinExp = unit.Exponent
+			foundCoin = true
+		case dispDenom:
+			dispExp = unit.Exponent
+			foundDisp = true
+		}
+	}
+
+	if !foundCoin || !foundDisp {
+		return 0, 0, fmt.Errorf("exponents not found")
+	}
+
+	return coinExp, dispExp, nil
+}
+
+func calculateDisplayAmount(amount string, coinExp, dispExp uint32) (math.LegacyDec, error) {
+	dispAmount, err := math.LegacyNewDecFromStr(amount)
+	if err != nil {
+		return math.LegacyDec{}, fmt.Errorf("invalid amount: %w", err)
+	}
+
+	power := math.LegacyNewDec(10)
+	if coinExp > dispExp {
+		return dispAmount.Mul(power.Power(uint64(coinExp - dispExp))), nil
+	}
+	return dispAmount.Quo(power.Power(uint64(dispExp - coinExp))), nil
+}
+
+func formatAllCoins(coins []*basev1beta1.Coin, metadata []*bankv1beta1.Metadata) ([]string, error) {
 	formatted := make([]string, len(coins))
 	for i, coin := range coins {
 		var err error
 		formatted[i], err = formatCoin(coin, metadata[i])
 		if err != nil {
-			return "", err
+			return nil, fmt.Errorf("failed to format coin at index %d: %w", i, err)
 		}
 	}
+	return formatted, nil
+}
 
-	// Sort the formatted coins by display denom.
+func sortFormattedCoins(formatted []string) {
 	sort.SliceStable(formatted, func(i, j int) bool {
 		denomI := strings.Split(formatted[i], " ")[1]
 		denomJ := strings.Split(formatted[j], " ")[1]
-
 		return denomI < denomJ
 	})
-
-	return strings.Join(formatted, ", "), nil
 }
