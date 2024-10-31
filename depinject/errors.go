@@ -3,68 +3,140 @@ package depinject
 import (
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/pkg/errors"
 )
 
-// ErrMultipleImplicitInterfaceBindings defines an error condition where an attempt was made to implicitly bind
-// Interface to a concrete type, but the container was unable to come to a resolution because multiple Matches
-// were found.
-type ErrMultipleImplicitInterfaceBindings struct {
-	error
-	Interface reflect.Type
-	Matches   []reflect.Type
-}
-
-func newErrMultipleImplicitInterfaceBindings(i reflect.Type, matches map[reflect.Type]reflect.Type) ErrMultipleImplicitInterfaceBindings {
-	var ms []reflect.Type
-	for k := range matches {
-		ms = append(ms, k)
+// Error types for dependency injection
+type (
+	// ErrMultipleImplicitInterfaceBindings occurs when multiple implementations
+	// are found for an interface with implicit binding
+	ErrMultipleImplicitInterfaceBindings struct {
+		error
+		Interface reflect.Type   // The interface type
+		Matches   []reflect.Type // Found implementations
 	}
-	return ErrMultipleImplicitInterfaceBindings{Interface: i, Matches: ms}
-}
 
-func (err ErrMultipleImplicitInterfaceBindings) Error() string {
-	matchesStr := ""
-	for _, m := range err.Matches {
-		matchesStr = fmt.Sprintf("%s\n  %s", matchesStr, fullyQualifiedTypeName(m))
+	// ErrNoTypeForExplicitBindingFound occurs when no provider is found
+	// for an explicitly bound implementation
+	ErrNoTypeForExplicitBindingFound struct {
+		error
+		Implementation string // The implementation type name
+		Interface      string // The interface type name
+		ModuleName     string // Optional module name
 	}
-	return fmt.Sprintf("Multiple implementations found for interface %v: %s", err.Interface, matchesStr)
+
+	// ErrDuplicateDefinition occurs when the same type is provided multiple times
+	ErrDuplicateDefinition struct {
+		error
+		Type         reflect.Type // The duplicated type
+		NewLocation  Location     // Location of the duplicate definition
+		OldLocation  string       // Location of the existing definition
+	}
+)
+
+// Error constructors
+
+// newErrMultipleImplicitInterfaceBindings creates an error for multiple interface implementations
+func newErrMultipleImplicitInterfaceBindings(iface reflect.Type, matches map[reflect.Type]reflect.Type) ErrMultipleImplicitInterfaceBindings {
+	implementations := make([]reflect.Type, 0, len(matches))
+	for impl := range matches {
+		implementations = append(implementations, impl)
+	}
+	return ErrMultipleImplicitInterfaceBindings{
+		Interface: iface,
+		Matches:   implementations,
+	}
 }
 
-// ErrNoTypeForExplicitBindingFound defines an error condition where an explicit binding was specified from Interface
-// to Implementation but no provider for the requested Implementation was found in the container.
-type ErrNoTypeForExplicitBindingFound struct {
-	Implementation string
-	Interface      string
-	ModuleName     string
-	error
-}
-
-func newErrNoTypeForExplicitBindingFound(p interfaceBinding) ErrNoTypeForExplicitBindingFound {
+// newErrNoTypeForExplicitBindingFound creates an error for missing implementation
+func newErrNoTypeForExplicitBindingFound(binding interfaceBinding) ErrNoTypeForExplicitBindingFound {
 	var moduleName string
-	if p.moduleKey != nil {
-		moduleName = p.moduleKey.name
+	if binding.moduleKey != nil {
+		moduleName = binding.moduleKey.name
 	}
-
+	
 	return ErrNoTypeForExplicitBindingFound{
-		Implementation: p.implTypeName,
-		Interface:      p.interfaceName,
+		Implementation: binding.implTypeName,
+		Interface:      binding.interfaceName,
 		ModuleName:     moduleName,
 	}
 }
 
-func (err ErrNoTypeForExplicitBindingFound) Error() string {
-	if err.ModuleName != "" {
-		return fmt.Sprintf("No type for explicit binding found.  Given the explicit interface binding %s in module %s, a provider of type %s was not found.",
-			err.Interface, err.ModuleName, err.Implementation)
-	} else {
-		return fmt.Sprintf("No type for explicit binding found.  Given the explicit interface binding %s, a provider of type %s was not found.",
-			err.Interface, err.Implementation)
+// newErrDuplicateDefinition creates an error for duplicate type definitions
+func newErrDuplicateDefinition(typ reflect.Type, newLoc Location, oldLoc string) ErrDuplicateDefinition {
+	return ErrDuplicateDefinition{
+		Type:         typ,
+		NewLocation:  newLoc,
+		OldLocation:  oldLoc,
 	}
 }
 
-func duplicateDefinitionError(typ reflect.Type, duplicateLoc Location, existingLoc string) error {
-	return errors.Errorf("duplicate provision of type %v by %s\n\talready provided by %s",
-		typ, duplicateLoc, existingLoc)
+// Error method implementations
+
+func (e ErrMultipleImplicitInterfaceBindings) Error() string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Multiple implementations found for interface %v:", e.Interface))
+	
+	for _, match := range e.Matches {
+		b.WriteString(fmt.Sprintf("\n  %s", fullyQualifiedTypeName(match)))
+	}
+	
+	return b.String()
+}
+
+func (e ErrNoTypeForExplicitBindingFound) Error() string {
+	if e.ModuleName != "" {
+		return fmt.Sprintf(
+			"No implementation found for explicit binding in module %q:\n"+
+			"  Interface: %s\n"+
+			"  Expected Implementation: %s",
+			e.ModuleName, e.Interface, e.Implementation,
+		)
+	}
+	
+	return fmt.Sprintf(
+		"No implementation found for explicit binding:\n"+
+		"  Interface: %s\n"+
+		"  Expected Implementation: %s",
+		e.Interface, e.Implementation,
+	)
+}
+
+func (e ErrDuplicateDefinition) Error() string {
+	return fmt.Sprintf(
+		"Duplicate provision of type %v:\n"+
+		"  New definition at: %s\n"+
+		"  Existing definition at: %s",
+		e.Type, e.NewLocation, e.OldLocation,
+	)
+}
+
+// Helper functions
+
+// duplicateDefinitionError wraps the creation of ErrDuplicateDefinition
+func duplicateDefinitionError(typ reflect.Type, newLoc Location, oldLoc string) error {
+	err := newErrDuplicateDefinition(typ, newLoc, oldLoc)
+	return errors.WithStack(err)
+}
+
+// Custom error checking
+
+// IsMultipleImplicitBindingsError checks if an error is ErrMultipleImplicitInterfaceBindings
+func IsMultipleImplicitBindingsError(err error) bool {
+	_, ok := err.(ErrMultipleImplicitInterfaceBindings)
+	return ok
+}
+
+// IsNoTypeForBindingError checks if an error is ErrNoTypeForExplicitBindingFound
+func IsNoTypeForBindingError(err error) bool {
+	_, ok := err.(ErrNoTypeForExplicitBindingFound)
+	return ok
+}
+
+// IsDuplicateDefinitionError checks if an error is ErrDuplicateDefinition
+func IsDuplicateDefinitionError(err error) bool {
+	_, ok := err.(ErrDuplicateDefinition)
+	return ok
 }
