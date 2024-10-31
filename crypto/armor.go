@@ -20,170 +20,106 @@ const (
 	blockTypePrivKey = "TENDERMINT PRIVATE KEY"
 	blockTypeKeyInfo = "TENDERMINT KEY INFO"
 	blockTypePubKey  = "TENDERMINT PUBLIC KEY"
-
-	defaultAlgo = "secp256k1"
-
-	headerVersion = "version"
-	headerType    = "type"
+	defaultAlgo      = "secp256k1"
+	headerVersion    = "version"
+	headerType       = "type"
+	headerKDF        = "kdf"
+	headerSalt       = "salt"
+	bcryptKDF        = "bcrypt"
+	version0         = "0.0.0"
+	version1         = "0.0.1"
 )
 
-// BcryptSecurityParameter is security parameter var, and it can be changed within the lcd test.
-// Making the bcrypt security parameter a var shouldn't be a security issue:
-// One can't verify an invalid key by maliciously changing the bcrypt
-// parameter during a runtime vulnerability. The main security
-// threat this then exposes would be something that changes this during
-// runtime before the user creates their key. This vulnerability must
-// succeed to update this to that same value before every subsequent call
-// to the keys command in future startups / or the attacker must get access
-// to the filesystem. However, with a similar threat model (changing
-// variables in runtime), one can cause the user to sign a different tx
-// than what they see, which is a significantly cheaper attack then breaking
-// a bcrypt hash. (Recall that the nonce still exists to break rainbow tables)
-// For further notes on security parameter choice, see README.md
+// BcryptSecurityParameter defines the security level for bcrypt key generation
 var BcryptSecurityParameter = 12
 
-//-----------------------------------------------------------------
-// add armor
-
-// Armor the InfoBytes
+// ArmorInfoBytes encrypts info bytes with armor encoding
 func ArmorInfoBytes(bz []byte) string {
 	header := map[string]string{
 		headerType:    "Info",
-		headerVersion: "0.0.0",
+		headerVersion: version0,
 	}
-
 	return EncodeArmor(blockTypeKeyInfo, header, bz)
 }
 
-// Armor the PubKeyBytes
+// ArmorPubKeyBytes encrypts public key bytes with armor encoding
 func ArmorPubKeyBytes(bz []byte, algo string) string {
 	header := map[string]string{
-		headerVersion: "0.0.1",
+		headerVersion: version1,
 	}
 	if algo != "" {
 		header[headerType] = algo
 	}
-
 	return EncodeArmor(blockTypePubKey, header, bz)
 }
 
-//-----------------------------------------------------------------
-// remove armor
-
-// Unarmor the InfoBytes
+// UnarmorInfoBytes decrypts armored info bytes
 func UnarmorInfoBytes(armorStr string) ([]byte, error) {
 	bz, header, err := unarmorBytes(armorStr, blockTypeKeyInfo)
 	if err != nil {
 		return nil, err
 	}
 
-	if header[headerVersion] != "0.0.0" {
+	if header[headerVersion] != version0 {
 		return nil, fmt.Errorf("unrecognized version: %v", header[headerVersion])
 	}
 
 	return bz, nil
 }
 
-// UnarmorPubKeyBytes returns the pubkey byte slice, a string of the algo type, and an error
-func UnarmorPubKeyBytes(armorStr string) (bz []byte, algo string, err error) {
+// UnarmorPubKeyBytes decrypts armored public key bytes and returns the key bytes, algorithm and any error
+func UnarmorPubKeyBytes(armorStr string) ([]byte, string, error) {
 	bz, header, err := unarmorBytes(armorStr, blockTypePubKey)
 	if err != nil {
 		return nil, "", fmt.Errorf("couldn't unarmor bytes: %v", err)
 	}
 
 	switch header[headerVersion] {
-	case "0.0.0":
-		return bz, defaultAlgo, err
-	case "0.0.1":
-		if header[headerType] == "" {
-			header[headerType] = defaultAlgo
+	case version0:
+		return bz, defaultAlgo, nil
+	case version1:
+		algo := header[headerType]
+		if algo == "" {
+			algo = defaultAlgo
 		}
-
-		return bz, header[headerType], err
+		return bz, algo, nil
 	case "":
 		return nil, "", fmt.Errorf("header's version field is empty")
 	default:
-		err = fmt.Errorf("unrecognized version: %v", header[headerVersion])
-		return nil, "", err
+		return nil, "", fmt.Errorf("unrecognized version: %v", header[headerVersion])
 	}
 }
 
-func unarmorBytes(armorStr, blockType string) (bz []byte, header map[string]string, err error) {
-	bType, header, bz, err := DecodeArmor(armorStr)
-	if err != nil {
-		return
-	}
-
-	if bType != blockType {
-		err = fmt.Errorf("unrecognized armor type %q, expected: %q", bType, blockType)
-		return
-	}
-
-	return
-}
-
-//-----------------------------------------------------------------
-// encrypt/decrypt with armor
-
-// Encrypt and armor the private key.
-func EncryptArmorPrivKey(privKey cryptotypes.PrivKey, passphrase string, algo string) string {
+// EncryptArmorPrivKey encrypts and armors a private key
+func EncryptArmorPrivKey(privKey cryptotypes.PrivKey, passphrase, algo string) string {
 	saltBytes, encBytes := encryptPrivKey(privKey, passphrase)
 	header := map[string]string{
-		"kdf":  "bcrypt",
-		"salt": fmt.Sprintf("%X", saltBytes),
+		headerKDF:  bcryptKDF,
+		headerSalt: fmt.Sprintf("%X", saltBytes),
 	}
-
 	if algo != "" {
 		header[headerType] = algo
 	}
-
-	armorStr := EncodeArmor(blockTypePrivKey, header, encBytes)
-
-	return armorStr
+	return EncodeArmor(blockTypePrivKey, header, encBytes)
 }
 
-// encrypt the given privKey with the passphrase using a randomly
-// generated salt and the xsalsa20 cipher. returns the salt and the
-// encrypted priv key.
-func encryptPrivKey(privKey cryptotypes.PrivKey, passphrase string) (saltBytes []byte, encBytes []byte) {
-	saltBytes = crypto.CRandBytes(16)
-	key, err := bcrypt.GenerateFromPassword(saltBytes, []byte(passphrase), BcryptSecurityParameter)
-	if err != nil {
-		panic(sdkerrors.Wrap(err, "error generating bcrypt key from passphrase"))
-	}
-
-	key = crypto.Sha256(key) // get 32 bytes
-	privKeyBytes := legacy.Cdc.MustMarshal(privKey)
-
-	return saltBytes, xsalsa20symmetric.EncryptSymmetric(privKeyBytes, key)
-}
-
-// UnarmorDecryptPrivKey returns the privkey byte slice, a string of the algo type, and an error
-func UnarmorDecryptPrivKey(armorStr string, passphrase string) (privKey cryptotypes.PrivKey, algo string, err error) {
+// UnarmorDecryptPrivKey decrypts an armored private key and returns the key, algorithm and any error
+func UnarmorDecryptPrivKey(armorStr, passphrase string) (privKey cryptotypes.PrivKey, algo string, err error) {
 	blockType, header, encBytes, err := DecodeArmor(armorStr)
 	if err != nil {
-		return privKey, "", err
+		return nil, "", err
 	}
 
-	if blockType != blockTypePrivKey {
-		return privKey, "", fmt.Errorf("unrecognized armor type: %v", blockType)
+	if err := validatePrivKeyHeader(blockType, header); err != nil {
+		return nil, "", err
 	}
 
-	if header["kdf"] != "bcrypt" {
-		return privKey, "", fmt.Errorf("unrecognized KDF type: %v", header["kdf"])
-	}
-
-	if header["salt"] == "" {
-		return privKey, "", fmt.Errorf("missing salt bytes")
-	}
-
-	saltBytes, err := hex.DecodeString(header["salt"])
+	saltBytes, err := hex.DecodeString(header[headerSalt])
 	if err != nil {
-		return privKey, "", fmt.Errorf("error decoding salt: %v", err.Error())
+		return nil, "", fmt.Errorf("error decoding salt: %v", err.Error())
 	}
 
 	privKey, err = decryptPrivKey(saltBytes, encBytes, passphrase)
-
 	if header[headerType] == "" {
 		header[headerType] = defaultAlgo
 	}
@@ -191,53 +127,98 @@ func UnarmorDecryptPrivKey(armorStr string, passphrase string) (privKey cryptoty
 	return privKey, header[headerType], err
 }
 
-func decryptPrivKey(saltBytes []byte, encBytes []byte, passphrase string) (privKey cryptotypes.PrivKey, err error) {
-	key, err := bcrypt.GenerateFromPassword(saltBytes, []byte(passphrase), BcryptSecurityParameter)
-	if err != nil {
-		return privKey, sdkerrors.Wrap(err, "error generating bcrypt key from passphrase")
-	}
-
-	key = crypto.Sha256(key) // Get 32 bytes
-
-	privKeyBytes, err := xsalsa20symmetric.DecryptSymmetric(encBytes, key)
-	if err != nil && err.Error() == "Ciphertext decryption failed" {
-		return privKey, sdkerrors.ErrWrongPassword
-	} else if err != nil {
-		return privKey, err
-	}
-
-	return legacy.PrivKeyFromBytes(privKeyBytes)
-}
-
-//-----------------------------------------------------------------
-// encode/decode with armor
-
+// EncodeArmor creates an armored string from the input data and headers
 func EncodeArmor(blockType string, headers map[string]string, data []byte) string {
 	buf := new(bytes.Buffer)
 	w, err := armor.Encode(buf, blockType, headers)
 	if err != nil {
 		panic(fmt.Errorf("could not encode ascii armor: %s", err))
 	}
-	_, err = w.Write(data)
-	if err != nil {
+	
+	if _, err := w.Write(data); err != nil {
 		panic(fmt.Errorf("could not encode ascii armor: %s", err))
 	}
-	err = w.Close()
-	if err != nil {
+	
+	if err := w.Close(); err != nil {
 		panic(fmt.Errorf("could not encode ascii armor: %s", err))
 	}
+	
 	return buf.String()
 }
 
-func DecodeArmor(armorStr string) (blockType string, headers map[string]string, data []byte, err error) {
+// DecodeArmor decodes an armored string and returns the block type, headers, data and any error
+func DecodeArmor(armorStr string) (string, map[string]string, []byte, error) {
 	buf := bytes.NewBufferString(armorStr)
 	block, err := armor.Decode(buf)
 	if err != nil {
 		return "", nil, nil, err
 	}
-	data, err = io.ReadAll(block.Body)
+	
+	data, err := io.ReadAll(block.Body)
 	if err != nil {
 		return "", nil, nil, err
 	}
+	
 	return block.Type, block.Header, data, nil
+}
+
+// Helper functions
+
+func validatePrivKeyHeader(blockType string, header map[string]string) error {
+	if blockType != blockTypePrivKey {
+		return fmt.Errorf("unrecognized armor type: %v", blockType)
+	}
+
+	if header[headerKDF] != bcryptKDF {
+		return fmt.Errorf("unrecognized KDF type: %v", header[headerKDF])
+	}
+
+	if header[headerSalt] == "" {
+		return fmt.Errorf("missing salt bytes")
+	}
+
+	return nil
+}
+
+func unarmorBytes(armorStr, blockType string) ([]byte, map[string]string, error) {
+	bType, header, bz, err := DecodeArmor(armorStr)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if bType != blockType {
+		return nil, nil, fmt.Errorf("unrecognized armor type %q, expected: %q", bType, blockType)
+	}
+
+	return bz, header, nil
+}
+
+func encryptPrivKey(privKey cryptotypes.PrivKey, passphrase string) (saltBytes []byte, encBytes []byte) {
+	saltBytes = crypto.CRandBytes(16)
+	key, err := bcrypt.GenerateFromPassword(saltBytes, []byte(passphrase), BcryptSecurityParameter)
+	if err != nil {
+		panic(sdkerrors.Wrap(err, "error generating bcrypt key from passphrase"))
+	}
+
+	key = crypto.Sha256(key)
+	privKeyBytes := legacy.Cdc.MustMarshal(privKey)
+	return saltBytes, xsalsa20symmetric.EncryptSymmetric(privKeyBytes, key)
+}
+
+func decryptPrivKey(saltBytes []byte, encBytes []byte, passphrase string) (cryptotypes.PrivKey, error) {
+	key, err := bcrypt.GenerateFromPassword(saltBytes, []byte(passphrase), BcryptSecurityParameter)
+	if err != nil {
+		return nil, sdkerrors.Wrap(err, "error generating bcrypt key from passphrase")
+	}
+
+	key = crypto.Sha256(key)
+	privKeyBytes, err := xsalsa20symmetric.DecryptSymmetric(encBytes, key)
+	if err != nil {
+		if err.Error() == "Ciphertext decryption failed" {
+			return nil, sdkerrors.ErrWrongPassword
+		}
+		return nil, err
+	}
+
+	return legacy.PrivKeyFromBytes(privKeyBytes)
 }
