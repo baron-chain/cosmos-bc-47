@@ -5,18 +5,23 @@ import (
 	"reflect"
 
 	"github.com/pkg/errors"
-
 	"cosmossdk.io/depinject/internal/graphviz"
 )
 
-// ManyPerContainerType marks a type which automatically gets grouped together. For an ManyPerContainerType T,
-// T and []T can be declared as output parameters for providers as many times within the container
-// as desired. All of the provided values for T can be retrieved by declaring an
-// []T input parameter.
+// Error definitions
+var (
+	ErrInvalidManyPerContainerType = errors.New("invalid many-per-container type usage")
+)
+
+// ManyPerContainerType marks a type which automatically gets grouped together.
+// For a ManyPerContainerType T:
+// - T and []T can be declared as output parameters multiple times
+// - All provided values can be retrieved using []T input parameter
 type ManyPerContainerType interface {
-	// IsManyPerContainerType is a marker function which just indicates that this is a many-per-container type.
-	IsManyPerContainerType()
+	IsManyPerContainerType() // Marker function
 }
+
+// Type validation functions
 
 var manyPerContainerTypeType = reflect.TypeOf((*ManyPerContainerType)(nil)).Elem()
 
@@ -28,72 +33,123 @@ func isManyPerContainerSliceType(typ reflect.Type) bool {
 	return typ.Kind() == reflect.Slice && isManyPerContainerType(typ.Elem())
 }
 
-type groupResolver struct {
-	typ          reflect.Type
-	sliceType    reflect.Type
-	idxsInValues []int
-	providers    []*simpleProvider
-	resolved     bool
-	values       reflect.Value
-	graphNode    *graphviz.Node
-}
+// Resolver types
+
+type (
+	// groupResolver handles resolution for many-per-container types
+	groupResolver struct {
+		typ          reflect.Type      // Base type
+		sliceType    reflect.Type      // Slice type for collection
+		idxsInValues []int            // Indices in provider values
+		providers    []*simpleProvider // Providers for this type
+		resolved     bool             // Resolution status
+		values       reflect.Value     // Resolved values
+		graphNode    *graphviz.Node   // Graph visualization node
+	}
+
+	// sliceGroupResolver wraps groupResolver for slice operations
+	sliceGroupResolver struct {
+		*groupResolver
+	}
+)
+
+// Resolver interface implementations
 
 func (g *groupResolver) getType() reflect.Type {
 	return g.sliceType
-}
-
-type sliceGroupResolver struct {
-	*groupResolver
 }
 
 func (g *groupResolver) describeLocation() string {
 	return fmt.Sprintf("many-per-container type %v", g.typ)
 }
 
+func (g *groupResolver) typeGraphNode() *graphviz.Node {
+	return g.graphNode
+}
+
+// Resolution methods
+
 func (g *sliceGroupResolver) resolve(c *container, _ *moduleKey, caller Location) (reflect.Value, error) {
-	// Log
+	g.logResolution(c, caller)
+	
+	if !g.resolved {
+		if err := g.resolveValues(c); err != nil {
+			return reflect.Value{}, err
+		}
+	}
+	
+	return g.values, nil
+}
+
+func (g *groupResolver) resolve(_ *container, _ *moduleKey, _ Location) (reflect.Value, error) {
+	return reflect.Value{}, errors.Wrapf(ErrInvalidManyPerContainerType,
+		"%v is a many-per-container type and cannot be used as an input value, use %v instead",
+		g.typ, g.sliceType)
+}
+
+// Resolution helper methods
+
+func (g *sliceGroupResolver) logResolution(c *container, caller Location) {
 	c.logf("Providing many-per-container type slice %v to %s from:", g.sliceType, caller.Name())
 	c.indentLogger()
 	for _, node := range g.providers {
 		c.logf(node.provider.Location.String())
 	}
 	c.dedentLogger()
+}
 
-	// Resolve
-	if !g.resolved {
-		res := reflect.MakeSlice(g.sliceType, 0, 0)
-		for i, node := range g.providers {
-			values, err := node.resolveValues(c)
-			if err != nil {
-				return reflect.Value{}, err
-			}
-			value := values[g.idxsInValues[i]]
-			if value.Kind() == reflect.Slice {
-				n := value.Len()
-				for j := 0; j < n; j++ {
-					res = reflect.Append(res, value.Index(j))
-				}
-			} else {
-				res = reflect.Append(res, value)
-			}
+func (g *groupResolver) resolveValues(c *container) error {
+	result := reflect.MakeSlice(g.sliceType, 0, len(g.providers))
+
+	for i, provider := range g.providers {
+		values, err := provider.resolveValues(c)
+		if err != nil {
+			return err
 		}
-		g.values = res
-		g.resolved = true
+
+		value := values[g.idxsInValues[i]]
+		result = g.appendValue(result, value)
 	}
 
-	return g.values, nil
-}
-
-func (g *groupResolver) resolve(_ *container, _ *moduleKey, _ Location) (reflect.Value, error) {
-	return reflect.Value{}, errors.Errorf("%v is an many-per-container type and cannot be used as an input value, instead use %v", g.typ, g.sliceType)
-}
-
-func (g *groupResolver) addNode(n *simpleProvider, i int) error {
-	g.providers = append(g.providers, n)
-	g.idxsInValues = append(g.idxsInValues, i)
+	g.values = result
+	g.resolved = true
 	return nil
 }
 
-func (g groupResolver) typeGraphNode() *graphviz.Node {
-	return g.graphNode
+func (g *groupResolver) appendValue(slice, value reflect.Value) reflect.Value {
+	if value.Kind() == reflect.Slice {
+		return g.appendSlice(slice, value)
+	}
+	return reflect.Append(slice, value)
+}
+
+func (g *groupResolver) appendSlice(slice, values reflect.Value) reflect.Value {
+	n := values.Len()
+	for i := 0; i < n; i++ {
+		slice = reflect.Append(slice, values.Index(i))
+	}
+	return slice
+}
+
+// Provider management
+
+func (g *groupResolver) addNode(provider *simpleProvider, idx int) error {
+	g.providers = append(g.providers, provider)
+	g.idxsInValues = append(g.idxsInValues, idx)
+	return nil
+}
+
+// Helper functions for creating resolvers
+
+func newGroupResolver(typ reflect.Type) *groupResolver {
+	return &groupResolver{
+		typ:       typ,
+		sliceType: reflect.SliceOf(typ),
+	}
+}
+
+func newSliceGroupResolver(base *groupResolver) *sliceGroupResolver {
+	return &sliceGroupResolver{
+		groupResolver: base,
+	}
 }
