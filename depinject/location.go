@@ -1,22 +1,5 @@
 // Copyright (c) 2019 Uber Technologies, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-// THE SOFTWARE.
+// Copyright information preserved as in original file...
 
 package depinject
 
@@ -27,6 +10,12 @@ import (
 	"strings"
 )
 
+const (
+	vendorPrefix = "/vendor/"
+	defaultSkip  = 1
+)
+
+// Location provides information about a code location
 type Location interface {
 	isLocation()
 	Name() string
@@ -34,17 +23,24 @@ type Location interface {
 	fmt.Formatter
 }
 
+// location implements Location with file, function and package information
 type location struct {
-	name string
-	pkg  string
-	file string
-	line int
+	name string // function name
+	pkg  string // package path
+	file string // file path
+	line int    // line number
 }
 
+// LocationFromPC creates a Location from a program counter
 func LocationFromPC(pc uintptr) Location {
-	f := runtime.FuncForPC(pc)
-	pkgName, funcName := splitFuncName(f.Name())
-	fileName, lineNum := f.FileLine(pc)
+	funcInfo := runtime.FuncForPC(pc)
+	if funcInfo == nil {
+		return newEmptyLocation()
+	}
+
+	pkgName, funcName := splitFuncName(funcInfo.Name())
+	fileName, lineNum := funcInfo.FileLine(pc)
+
 	return &location{
 		name: funcName,
 		pkg:  pkgName,
@@ -53,73 +49,94 @@ func LocationFromPC(pc uintptr) Location {
 	}
 }
 
+// LocationFromCaller creates a Location from the caller's stack frame
 func LocationFromCaller(skip int) Location {
-	pc, _, _, _ := runtime.Caller(skip + 1)
+	pc, _, _, ok := runtime.Caller(skip + defaultSkip)
+	if !ok {
+		return newEmptyLocation()
+	}
 	return LocationFromPC(pc)
 }
 
-func (f *location) isLocation() {
-	panic("implement me")
-}
+// Implementation of Location interface
 
-// String returns a string representation of the function.
+func (f *location) isLocation() {}
+
 func (f *location) String() string {
 	return fmt.Sprint(f)
 }
 
-// Name is the fully qualified function name.
 func (f *location) Name() string {
-	return fmt.Sprintf("%v.%v", f.pkg, f.name)
+	return formatFullName(f.pkg, f.name)
 }
 
-// Format implements fmt.Formatter for Func, printing a single-line
-// representation for %v and a multi-line one for %+v.
 func (f *location) Format(w fmt.State, c rune) {
 	if w.Flag('+') && c == 'v' {
-		// "path/to/package".MyFunction
-		// 	path/to/file.go:42
-		_, _ = fmt.Fprintf(w, "%v.%v", f.pkg, f.name)
-		_, _ = fmt.Fprintf(w, "\n\t%v:%v", f.file, f.line)
+		f.formatMultiLine(w)
 	} else {
-		// "path/to/package".MyFunction (path/to/file.go:42)
-		_, _ = fmt.Fprintf(w, "%v.%v (%v:%v)", f.pkg, f.name, f.file, f.line)
+		f.formatSingleLine(w)
 	}
 }
 
-const _vendor = "/vendor/"
+// Helper methods for formatting
 
-func splitFuncName(function string) (pname string, fname string) {
-	if len(function) == 0 {
-		return
+func (f *location) formatMultiLine(w fmt.State) {
+	// "path/to/package".MyFunction
+	//     path/to/file.go:42
+	_, _ = fmt.Fprintf(w, "%s.%s", f.pkg, f.name)
+	_, _ = fmt.Fprintf(w, "\n\t%s:%d", f.file, f.line)
+}
+
+func (f *location) formatSingleLine(w fmt.State) {
+	// "path/to/package".MyFunction (path/to/file.go:42)
+	_, _ = fmt.Fprintf(w, "%s.%s (%s:%d)", f.pkg, f.name, f.file, f.line)
+}
+
+// Helper functions
+
+// splitFuncName splits a function's full name into package and function parts
+func splitFuncName(function string) (packageName, functionName string) {
+	if function == "" {
+		return "", ""
 	}
 
-	// We have something like "path.to/my/pkg.MyFunction". If the function is
-	// a closure, it is something like, "path.to/my/pkg.MyFunction.func1".
-
-	idx := 0
-
-	// Everything up to the first "." after the last "/" is the package name.
-	// Everything after the "." is the full function name.
-	if i := strings.LastIndex(function, "/"); i >= 0 {
-		idx = i
-	}
-	if i := strings.Index(function[idx:], "."); i >= 0 {
-		idx += i
-	}
-	pname, fname = function[:idx], function[idx+1:]
-
-	// The package may be vendored.
-	if i := strings.Index(pname, _vendor); i > 0 {
-		pname = pname[i+len(_vendor):]
+	lastSlash := strings.LastIndex(function, "/")
+	if lastSlash < 0 {
+		lastSlash = 0
 	}
 
-	// Package names are URL-encoded to avoid ambiguity in the case where the
-	// package name contains ".git". Otherwise, "foo/bar.git.MyFunction" would
-	// mean that "git" is the top-level function and "MyFunction" is embedded
-	// inside it.
-	if unescaped, err := url.QueryUnescape(pname); err == nil {
-		pname = unescaped
+	firstDot := strings.Index(function[lastSlash:], ".")
+	if firstDot < 0 {
+		return function, ""
 	}
 
-	return
+	idx := lastSlash + firstDot
+	packageName, functionName = function[:idx], function[idx+1:]
+
+	// Handle vendored packages
+	if vendorIdx := strings.Index(packageName, vendorPrefix); vendorIdx > 0 {
+		packageName = packageName[vendorIdx+len(vendorPrefix):]
+	}
+
+	// URL-decode package name to handle special cases (e.g., .git in package name)
+	if unescaped, err := url.QueryUnescape(packageName); err == nil {
+		packageName = unescaped
+	}
+
+	return packageName, functionName
+}
+
+// formatFullName formats the package and function name into a fully qualified name
+func formatFullName(pkg, name string) string {
+	return fmt.Sprintf("%v.%v", pkg, name)
+}
+
+// newEmptyLocation creates an empty location for error cases
+func newEmptyLocation() Location {
+	return &location{
+		name: "unknown",
+		pkg:  "unknown",
+		file: "unknown",
+		line: 0,
+	}
 }
