@@ -1,82 +1,143 @@
 package depinject
 
-// Inject builds the container specified by containerConfig and extracts the
-// requested outputs from the container or returns an error. It is the single
-// entry point for building and running a dependency injection container.
-// Each of the values specified as outputs must be pointers to types that
-// can be provided by the container.
+import (
+	"fmt"
+)
+
+// Error definitions
+var (
+	ErrInvalidDebugConfig = fmt.Errorf("failed to create debug configuration")
+	ErrProviderRegistration = fmt.Errorf("failed to register providers")
+)
+
+// InjectionOptions holds the configuration for injection
+type InjectionOptions struct {
+	location   Location
+	debugOpt   DebugOption
+	config     Config
+	outputs    []interface{}
+}
+
+// Inject builds and runs a dependency injection container.
+// It uses AutoDebug mode which provides verbose debug info on error.
 //
-// Ex:
+// Parameters:
+// - containerConfig: The container configuration
+// - outputs: Pointer values to be filled by the container
+//
+// Example:
 //
 //	var x int
-//	Inject(Provide(func() int { return 1 }), &x)
-//
-// Inject uses the debug mode provided by AutoDebug which means there will be
-// verbose debugging information if there is an error and nothing upon success.
-// Use InjectDebug to configure debug behavior.
+//	err := Inject(Provide(func() int { return 1 }), &x)
 func Inject(containerConfig Config, outputs ...interface{}) error {
-	loc := LocationFromCaller(1)
-	return inject(loc, AutoDebug(), containerConfig, outputs...)
+	opts := InjectionOptions{
+		location: LocationFromCaller(1),
+		debugOpt: AutoDebug(),
+		config:   containerConfig,
+		outputs:  outputs,
+	}
+	return runInjection(opts)
 }
 
-// InjectDebug is a version of Inject which takes an optional DebugOption for
-// logging and visualization.
+// InjectDebug is like Inject but with configurable debug options.
+//
+// Parameters:
+// - debugOpt: Debug configuration for logging and visualization
+// - config: The container configuration
+// - outputs: Pointer values to be filled by the container
 func InjectDebug(debugOpt DebugOption, config Config, outputs ...interface{}) error {
-	loc := LocationFromCaller(1)
-	return inject(loc, debugOpt, config, outputs...)
+	opts := InjectionOptions{
+		location: LocationFromCaller(1),
+		debugOpt: debugOpt,
+		config:   config,
+		outputs:  outputs,
+	}
+	return runInjection(opts)
 }
 
-func inject(loc Location, debugOpt DebugOption, config Config, outputs ...interface{}) error {
-	cfg, err := newDebugConfig()
+// runInjection handles the main injection process
+func runInjection(opts InjectionOptions) error {
+	cfg, err := setupDebugConfig()
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %v", ErrInvalidDebugConfig, err)
 	}
 
-	// always generate graph on exit
-	defer cfg.generateGraph()
-
-	// debug cleanup
+	// Ensure cleanup and graph generation on function exit
 	defer func() {
-		for _, f := range cfg.cleanup {
-			f()
-		}
+		cfg.generateGraph()
+		runCleanup(cfg)
 	}()
 
-	if err = doInject(cfg, loc, debugOpt, config, outputs...); err != nil {
-		cfg.logf("Error: %v", err)
-		if cfg.onError != nil {
-			if err2 := cfg.onError.applyConfig(cfg); err2 != nil {
-				return err2
-			}
-		}
-
-		return err
+	// Run injection process
+	if err := performInjection(cfg, opts); err != nil {
+		return handleInjectionError(cfg, err)
 	}
 
+	return handleInjectionSuccess(cfg)
+}
+
+// setupDebugConfig creates and validates the debug configuration
+func setupDebugConfig() (*debugConfig, error) {
+	cfg, err := newDebugConfig()
+	if err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// performInjection executes the main injection logic
+func performInjection(cfg *debugConfig, opts InjectionOptions) error {
+	if opts.debugOpt != nil {
+		if err := opts.debugOpt.applyConfig(cfg); err != nil {
+			return err
+		}
+	}
+
+	return buildContainer(cfg, opts)
+}
+
+// buildContainer creates and configures the dependency container
+func buildContainer(cfg *debugConfig, opts InjectionOptions) error {
+	cfg.logf("Registering providers")
+	cfg.indentLogger()
+	defer cfg.dedentLogger()
+
+	container := newContainer(cfg)
+	
+	if err := opts.config.apply(container); err != nil {
+		cfg.logf("Failed registering providers: %+v", err)
+		return fmt.Errorf("%w: %v", ErrProviderRegistration, err)
+	}
+
+	return container.build(opts.location, opts.outputs...)
+}
+
+// handleInjectionError processes errors during injection
+func handleInjectionError(cfg *debugConfig, err error) error {
+	cfg.logf("Error: %v", err)
+	
+	if cfg.onError != nil {
+		if err2 := cfg.onError.applyConfig(cfg); err2 != nil {
+			return fmt.Errorf("error handling failed: %v (original error: %v)", err2, err)
+		}
+	}
+	
+	return err
+}
+
+// handleInjectionSuccess handles successful injection
+func handleInjectionSuccess(cfg *debugConfig) error {
 	if cfg.onSuccess != nil {
-		if err2 := cfg.onSuccess.applyConfig(cfg); err2 != nil {
-			return err2
+		if err := cfg.onSuccess.applyConfig(cfg); err != nil {
+			return fmt.Errorf("success handling failed: %v", err)
 		}
 	}
 	return nil
 }
 
-func doInject(cfg *debugConfig, loc Location, debugOpt DebugOption, config Config, outputs ...interface{}) error {
-	if debugOpt != nil {
-		if err := debugOpt.applyConfig(cfg); err != nil {
-			return err
-		}
+// runCleanup executes cleanup functions
+func runCleanup(cfg *debugConfig) {
+	for _, cleanup := range cfg.cleanup {
+		cleanup()
 	}
-
-	cfg.logf("Registering providers")
-	cfg.indentLogger()
-	ctr := newContainer(cfg)
-	err := config.apply(ctr)
-	if err != nil {
-		cfg.logf("Failed registering providers because of: %+v", err)
-		return err
-	}
-	cfg.dedentLogger()
-
-	return ctr.build(loc, outputs...)
 }
