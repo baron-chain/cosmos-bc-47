@@ -9,33 +9,50 @@ import (
 	"cosmossdk.io/depinject/internal/graphviz"
 )
 
-// DebugOption is a functional option for running a container that controls
-// debug logging and visualization output.
-type DebugOption interface {
-	applyConfig(*debugConfig) error
-}
+const (
+	defaultDebugFile  = "debug_container.dot"
+	defaultFilePerms  = 0o644
+	defaultFontSize   = "12.0"
+	defaultPenWidth   = "0.5"
+	defaultGraphStyle = "rounded"
+)
 
-// StdoutLogger is a debug option which routes logging output to stdout.
+// Debug Configuration Types
+
+type (
+	// DebugOption configures debug logging and visualization output
+	DebugOption interface {
+		applyConfig(*debugConfig) error
+	}
+
+	debugConfig struct {
+		loggers       []func(string)
+		indentStr     string
+		logBuf        *[]string
+		graph         *graphviz.Graph
+		visualizers   []func(string)
+		logVisualizer bool
+		onError       DebugOption
+		onSuccess     DebugOption
+		cleanup       []func()
+	}
+
+	debugOption func(*debugConfig) error
+)
+
+// Debug Option Constructors
+
+// StdoutLogger routes logging output to stdout
 func StdoutLogger() DebugOption {
-	return Logger(func(s string) {
-		_, _ = fmt.Fprintln(os.Stdout, s)
-	})
+	return Logger(func(s string) { fmt.Fprintln(os.Stdout, s) })
 }
 
-// StderrLogger is a debug option which routes logging output to stderr.
+// StderrLogger routes logging output to stderr
 func StderrLogger() DebugOption {
-	return Logger(func(s string) {
-		_, _ = fmt.Fprintln(os.Stderr, s)
-	})
+	return Logger(func(s string) { fmt.Fprintln(os.Stderr, s) })
 }
 
-// Visualizer creates an option which provides a visualizer function which
-// will receive a rendering of the container in the Graphiz DOT format
-// whenever the container finishes building or fails due to an error. The
-// graph is color-coded to aid debugging with black representing success,
-// red representing an error, and gray representing unused types or functions.
-// Graph rendering should be deterministic for a given version of the container
-// module and container options so that graphs can be used in tests.
+// Visualizer provides a function to receive container rendering in Graphviz DOT format
 func Visualizer(visualizer func(dotGraph string)) DebugOption {
 	return debugOption(func(c *debugConfig) error {
 		c.addFuncVisualizer(visualizer)
@@ -43,8 +60,7 @@ func Visualizer(visualizer func(dotGraph string)) DebugOption {
 	})
 }
 
-// LogVisualizer is a debug option which dumps a graphviz DOT rendering of
-// the container to the log.
+// LogVisualizer dumps a graphviz DOT rendering to the log
 func LogVisualizer() DebugOption {
 	return debugOption(func(c *debugConfig) error {
 		c.enableLogVisualizer()
@@ -52,8 +68,7 @@ func LogVisualizer() DebugOption {
 	})
 }
 
-// FileVisualizer is a debug option which dumps a graphviz DOT rendering of
-// the container to the specified file.
+// FileVisualizer dumps a graphviz DOT rendering to the specified file
 func FileVisualizer(filename string) DebugOption {
 	return debugOption(func(c *debugConfig) error {
 		c.addFileVisualizer(filename)
@@ -61,48 +76,35 @@ func FileVisualizer(filename string) DebugOption {
 	})
 }
 
-// Logger creates an option which provides a logger function which will
-// receive all log messages from the container.
+// Logger provides a logging function for container messages
 func Logger(logger func(string)) DebugOption {
 	return debugOption(func(c *debugConfig) error {
 		logger("Initializing logger")
 		c.loggers = append(c.loggers, logger)
-
-		// send conditional log messages batched for onError/onSuccess cases
-		if c.logBuf != nil {
-			for _, s := range *c.logBuf {
-				logger(s)
-			}
-		}
-
+		c.sendBufferedLogs(logger)
 		return nil
 	})
 }
 
-const debugContainerDot = "debug_container.dot"
-
-// Debug is a default debug option which sends log output to stderr, dumps
-// the container in the graphviz DOT and SVG formats to debug_container.dot
-// and debug_container.svg respectively.
+// Debug sets default debug options (stderr output and file visualization)
 func Debug() DebugOption {
 	return DebugOptions(
 		StderrLogger(),
-		FileVisualizer(debugContainerDot),
+		FileVisualizer(defaultDebugFile),
 	)
 }
 
-func (d *debugConfig) initLogBuf() {
-	if d.logBuf == nil {
-		d.logBuf = &[]string{}
-		d.loggers = append(d.loggers, func(s string) {
-			*d.logBuf = append(*d.logBuf, s)
-		})
-	}
+// AutoDebug enables Debug on error and cleans up files on success
+func AutoDebug() DebugOption {
+	return DebugOptions(
+		OnError(Debug()),
+		OnSuccess(DebugCleanup(func() { deleteIfExists(defaultDebugFile) })),
+	)
 }
 
-// OnError is a debug option that allows setting debug options that are
-// conditional on an error happening. Any loggers added error will
-// receive the full dump of logs since the start of container processing.
+// Conditional Debug Options
+
+// OnError sets debug options to apply only when an error occurs
 func OnError(option DebugOption) DebugOption {
 	return debugOption(func(config *debugConfig) error {
 		config.initLogBuf()
@@ -111,9 +113,7 @@ func OnError(option DebugOption) DebugOption {
 	})
 }
 
-// OnSuccess is a debug option that allows setting debug options that are
-// conditional on successful container resolution. Any loggers added on success
-// will receive the full dump of logs since the start of container processing.
+// OnSuccess sets debug options to apply only on successful resolution
 func OnSuccess(option DebugOption) DebugOption {
 	return debugOption(func(config *debugConfig) error {
 		config.initLogBuf()
@@ -122,8 +122,7 @@ func OnSuccess(option DebugOption) DebugOption {
 	})
 }
 
-// DebugCleanup specifies a clean-up function to be called at the end of
-// processing to clean up any resources that may be used during debugging.
+// DebugCleanup specifies cleanup functions for debug resources
 func DebugCleanup(cleanup func()) DebugOption {
 	return debugOption(func(config *debugConfig) error {
 		config.cleanup = append(config.cleanup, cleanup)
@@ -131,25 +130,7 @@ func DebugCleanup(cleanup func()) DebugOption {
 	})
 }
 
-// AutoDebug does the same thing as Debug when there is an error and deletes
-// the debug_container.dot if it exists when there is no error. This is the
-// default debug mode of Run.
-func AutoDebug() DebugOption {
-	return DebugOptions(
-		OnError(Debug()),
-		OnSuccess(DebugCleanup(func() {
-			deleteIfExists(debugContainerDot)
-		})),
-	)
-}
-
-func deleteIfExists(filename string) {
-	if _, err := os.Stat(filename); err == nil {
-		_ = os.Remove(filename)
-	}
-}
-
-// DebugOptions creates a debug option which bundles together other debug options.
+// DebugOptions bundles multiple debug options together
 func DebugOptions(options ...DebugOption) DebugOption {
 	return debugOption(func(c *debugConfig) error {
 		for _, opt := range options {
@@ -161,69 +142,57 @@ func DebugOptions(options ...DebugOption) DebugOption {
 	})
 }
 
-type debugConfig struct {
-	// logging
-	loggers   []func(string)
-	indentStr string
-	logBuf    *[]string // a log buffer for onError/onSuccess processing
+// Debug Config Implementation
 
-	// graphing
-	graph         *graphviz.Graph
-	visualizers   []func(string)
-	logVisualizer bool
-
-	// extra processing
-	onError   DebugOption
-	onSuccess DebugOption
-	cleanup   []func()
-}
-
-type debugOption func(*debugConfig) error
-
-func (c debugOption) applyConfig(ctr *debugConfig) error {
-	return c(ctr)
-}
-
-var _ DebugOption = (*debugOption)(nil)
+func (c debugOption) applyConfig(ctr *debugConfig) error { return c(ctr) }
 
 func newDebugConfig() (*debugConfig, error) {
-	return &debugConfig{
-		graph: graphviz.NewGraph(),
-	}, nil
+	return &debugConfig{graph: graphviz.NewGraph()}, nil
 }
 
-func (c *debugConfig) indentLogger() {
-	c.indentStr = c.indentStr + " "
-}
-
-func (c *debugConfig) dedentLogger() {
-	if len(c.indentStr) > 0 {
-		c.indentStr = c.indentStr[1:]
+func (c *debugConfig) initLogBuf() {
+	if c.logBuf == nil {
+		c.logBuf = &[]string{}
+		c.loggers = append(c.loggers, func(s string) {
+			*c.logBuf = append(*c.logBuf, s)
+		})
 	}
 }
+
+func (c *debugConfig) sendBufferedLogs(logger func(string)) {
+	if c.logBuf != nil {
+		for _, s := range *c.logBuf {
+			logger(s)
+		}
+	}
+}
+
+// Logging Methods
+
+func (c *debugConfig) indentLogger()  { c.indentStr += " " }
+func (c *debugConfig) dedentLogger()  { c.indentStr = c.indentStr[1:] }
 
 func (c debugConfig) logf(format string, args ...interface{}) {
-	s := fmt.Sprintf(c.indentStr+format, args...)
+	msg := fmt.Sprintf(c.indentStr+format, args...)
 	for _, logger := range c.loggers {
-		logger(s)
+		logger(msg)
 	}
 }
+
+// Graph Management
 
 func (c *debugConfig) generateGraph() {
 	dotStr := c.graph.String()
 	if c.logVisualizer {
 		c.logf("DOT Graph: %s", dotStr)
 	}
-
 	for _, v := range c.visualizers {
 		v(dotStr)
 	}
 }
 
 func (c *debugConfig) addFuncVisualizer(f func(string)) {
-	c.visualizers = append(c.visualizers, func(dot string) {
-		f(dot)
-	})
+	c.visualizers = append(c.visualizers, f)
 }
 
 func (c *debugConfig) enableLogVisualizer() {
@@ -232,82 +201,92 @@ func (c *debugConfig) enableLogVisualizer() {
 
 func (c *debugConfig) addFileVisualizer(filename string) {
 	c.visualizers = append(c.visualizers, func(_ string) {
-		dotStr := c.graph.String()
-		err := os.WriteFile(filename, []byte(dotStr), 0o644)
-		if err != nil {
+		if err := c.saveGraphToFile(filename); err != nil {
 			c.logf("Error saving graphviz file %s: %+v", filename, err)
-		} else {
-			path, err := filepath.Abs(filename)
-			if err == nil {
-				c.logf("Saved graph of container to %s", path)
-			}
 		}
 	})
 }
+
+func (c *debugConfig) saveGraphToFile(filename string) error {
+	if err := os.WriteFile(filename, []byte(c.graph.String()), defaultFilePerms); err != nil {
+		return err
+	}
+	
+	if path, err := filepath.Abs(filename); err == nil {
+		c.logf("Saved graph of container to %s", path)
+	}
+	return nil
+}
+
+// Node Management
 
 func (c *debugConfig) locationGraphNode(location Location, key *moduleKey) *graphviz.Node {
 	graph := c.moduleSubGraph(key)
 	name := location.Name()
 	node, found := graph.FindOrCreateNode(name)
-	if found {
-		return node
+	if !found {
+		node.SetShape("box")
+		setUnusedStyle(node.Attributes)
 	}
-
-	node.SetShape("box")
-	setUnusedStyle(node.Attributes)
 	return node
 }
 
 func (c *debugConfig) typeGraphNode(typ reflect.Type) *graphviz.Node {
-	name := moreUsefulTypeString(typ)
+	name := formatTypeString(typ)
 	node, found := c.graph.FindOrCreateNode(name)
-	if found {
-		return node
+	if !found {
+		setUnusedStyle(node.Attributes)
 	}
-
-	setUnusedStyle(node.Attributes)
 	return node
-}
-
-func setUnusedStyle(attr *graphviz.Attributes) {
-	attr.SetColor("lightgrey")
-	attr.SetPenWidth("0.5")
-	attr.SetFontColor("dimgrey")
-}
-
-// moreUsefulTypeString is more useful than reflect.Type.String()
-func moreUsefulTypeString(ty reflect.Type) string {
-	switch ty.Kind() {
-	case reflect.Struct, reflect.Interface:
-		return fmt.Sprintf("%s.%s", ty.PkgPath(), ty.Name())
-	case reflect.Pointer:
-		return fmt.Sprintf("*%s", moreUsefulTypeString(ty.Elem()))
-	case reflect.Map:
-		return fmt.Sprintf("map[%s]%s", moreUsefulTypeString(ty.Key()), moreUsefulTypeString(ty.Elem()))
-	case reflect.Slice:
-		return fmt.Sprintf("[]%s", moreUsefulTypeString(ty.Elem()))
-	default:
-		return ty.String()
-	}
 }
 
 func (c *debugConfig) moduleSubGraph(key *moduleKey) *graphviz.Graph {
 	if key == nil {
-		// return the root graph
 		return c.graph
-	} else {
-		gname := fmt.Sprintf("cluster_%s", key.name)
-		graph, found := c.graph.FindOrCreateSubGraph(gname)
-		if !found {
-			graph.SetLabel(fmt.Sprintf("Module: %s", key.name))
-			graph.SetPenWidth("0.5")
-			graph.SetFontSize("12.0")
-			graph.SetStyle("rounded")
-		}
-		return graph
 	}
+	
+	gname := fmt.Sprintf("cluster_%s", key.name)
+	graph, found := c.graph.FindOrCreateSubGraph(gname)
+	if !found {
+		graph.SetLabel(fmt.Sprintf("Module: %s", key.name))
+		graph.SetPenWidth(defaultPenWidth)
+		graph.SetFontSize(defaultFontSize)
+		graph.SetStyle(defaultGraphStyle)
+	}
+	return graph
 }
 
 func (c *debugConfig) addGraphEdge(from, to *graphviz.Node) {
 	_ = c.graph.CreateEdge(from, to)
+}
+
+// Helper Functions
+
+func setUnusedStyle(attr *graphviz.Attributes) {
+	attr.SetColor("lightgrey")
+	attr.SetPenWidth(defaultPenWidth)
+	attr.SetFontColor("dimgrey")
+}
+
+func formatTypeString(typ reflect.Type) string {
+	switch typ.Kind() {
+	case reflect.Struct, reflect.Interface:
+		return fmt.Sprintf("%s.%s", typ.PkgPath(), typ.Name())
+	case reflect.Pointer:
+		return fmt.Sprintf("*%s", formatTypeString(typ.Elem()))
+	case reflect.Map:
+		return fmt.Sprintf("map[%s]%s", 
+			formatTypeString(typ.Key()), 
+			formatTypeString(typ.Elem()))
+	case reflect.Slice:
+		return fmt.Sprintf("[]%s", formatTypeString(typ.Elem()))
+	default:
+		return typ.String()
+	}
+}
+
+func deleteIfExists(filename string) {
+	if _, err := os.Stat(filename); err == nil {
+		_ = os.Remove(filename)
+	}
 }
