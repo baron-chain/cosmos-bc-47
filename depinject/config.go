@@ -6,177 +6,14 @@ import (
 	"github.com/pkg/errors"
 )
 
-// Config is a functional configuration of a container.
+// Common errors
+var (
+	ErrEmptyModuleName = errors.New("expected non-empty module name")
+)
+
+// Config defines a functional configuration of a container
 type Config interface {
 	apply(*container) error
-}
-
-// Provide defines a container configuration which registers the provided dependency
-// injection providers. Each provider will be called at most once with the
-// exception of module-scoped providers which are called at most once per module
-// (see ModuleKey). All provider functions must be declared, exported functions not
-// internal packages and all of their input and output types must also be declared
-// and exported and not in internal packages. Note that generic type parameters
-// will not be checked, but they should also be exported so that codegen is possible.
-func Provide(providers ...interface{}) Config {
-	return containerConfig(func(ctr *container) error {
-		return provide(ctr, nil, providers)
-	})
-}
-
-// ProvideInModule defines container configuration which registers the provided dependency
-// injection providers that are to be run in the named module. Each provider
-// will be called at most once. All provider functions must be declared, exported functions not
-// internal packages and all of their input and output types must also be declared
-// and exported and not in internal packages. Note that generic type parameters
-// will not be checked, but they should also be exported so that codegen is possible.
-func ProvideInModule(moduleName string, providers ...interface{}) Config {
-	return containerConfig(func(ctr *container) error {
-		if moduleName == "" {
-			return errors.Errorf("expected non-empty module name")
-		}
-
-		return provide(ctr, ctr.moduleKeyContext.createOrGetModuleKey(moduleName), providers)
-	})
-}
-
-func provide(ctr *container, key *moduleKey, providers []interface{}) error {
-	for _, c := range providers {
-		rc, err := extractProviderDescriptor(c)
-		if err != nil {
-			return errors.WithStack(err)
-		}
-		_, err = ctr.addNode(&rc, key)
-		if err != nil {
-			return errors.WithStack(err)
-		}
-	}
-	return nil
-}
-
-// Invoke defines a container configuration which registers the provided invoker functions. Each invoker will be called
-// at the end of dependency graph configuration in the order in which it was defined. Invokers may not define output
-// parameters, although they may return an error, and all of their input parameters will be marked as optional so that
-// invokers impose no additional constraints on the dependency graph. Invoker functions should nil-check all inputs.
-// All invoker functions must be declared, exported functions not
-// internal packages and all of their input and output types must also be declared
-// and exported and not in internal packages. Note that generic type parameters
-// will not be checked, but they should also be exported so that codegen is possible.
-func Invoke(invokers ...interface{}) Config {
-	return containerConfig(func(ctr *container) error {
-		return invoke(ctr, nil, invokers)
-	})
-}
-
-// InvokeInModule defines a container configuration which registers the provided invoker functions to run in the
-// provided module scope. Each invoker will be called
-// at the end of dependency graph configuration in the order in which it was defined. Invokers may not define output
-// parameters, although they may return an error, and all of their input parameters will be marked as optional so that
-// invokers impose no additional constraints on the dependency graph. Invoker functions should nil-check all inputs.
-// All invoker functions must be declared, exported functions not
-// internal packages and all of their input and output types must also be declared
-// and exported and not in internal packages. Note that generic type parameters
-// will not be checked, but they should also be exported so that codegen is possible.
-func InvokeInModule(moduleName string, invokers ...interface{}) Config {
-	return containerConfig(func(ctr *container) error {
-		if moduleName == "" {
-			return errors.Errorf("expected non-empty module name")
-		}
-
-		return invoke(ctr, ctr.moduleKeyContext.createOrGetModuleKey(moduleName), invokers)
-	})
-}
-
-func invoke(ctr *container, key *moduleKey, invokers []interface{}) error {
-	for _, c := range invokers {
-		rc, err := extractInvokerDescriptor(c)
-		if err != nil {
-			return errors.WithStack(err)
-		}
-		err = ctr.addInvoker(&rc, key)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// BindInterface defines a container configuration for an explicit interface binding of inTypeName to outTypeName
-// in global scope.  The example below demonstrates a configuration where the container always provides a Canvasback
-// instance when an interface of type Duck is requested as an input.
-//
-// BindInterface(
-//
-//	"cosmossdk.io/depinject_test/depinject_test.Duck",
-//	"cosmossdk.io/depinject_test/depinject_test.Canvasback")
-func BindInterface(inTypeName string, outTypeName string) Config {
-	return containerConfig(func(ctr *container) error {
-		return bindInterface(ctr, inTypeName, outTypeName, "")
-	})
-}
-
-// BindInterfaceInModule defines a container configuration for an explicit interface binding of inTypeName to outTypeName
-// in the scope of the module with name moduleName.  The example below demonstrates a configuration where the container
-// provides a Canvasback instance when an interface of type Duck is requested as an input, but only in the scope of
-// "moduleFoo".
-//
-// BindInterfaceInModule(
-//
-//	 "moduleFoo",
-//		"cosmossdk.io/depinject_test/depinject_test.Duck",
-//		"cosmossdk.io/depinject_test/depinject_test.Canvasback")
-func BindInterfaceInModule(moduleName string, inTypeName string, outTypeName string) Config {
-	return containerConfig(func(ctr *container) error {
-		return bindInterface(ctr, inTypeName, outTypeName, moduleName)
-	})
-}
-
-func bindInterface(ctr *container, inTypeName string, outTypeName string, moduleName string) error {
-	var mk *moduleKey
-	if moduleName != "" {
-		mk = &moduleKey{name: moduleName}
-	}
-	ctr.addBinding(interfaceBinding{
-		interfaceName: inTypeName,
-		implTypeName:  outTypeName,
-		moduleKey:     mk,
-	})
-
-	return nil
-}
-
-func Supply(values ...interface{}) Config {
-	loc := LocationFromCaller(1)
-	return containerConfig(func(ctr *container) error {
-		for _, v := range values {
-			err := ctr.supply(reflect.ValueOf(v), loc)
-			if err != nil {
-				return errors.WithStack(err)
-			}
-		}
-		return nil
-	})
-}
-
-// Error defines configuration which causes the dependency injection container to
-// fail immediately.
-func Error(err error) Config {
-	return containerConfig(func(*container) error {
-		return errors.WithStack(err)
-	})
-}
-
-// Configs defines a configuration which bundles together multiple Config definitions.
-func Configs(opts ...Config) Config {
-	return containerConfig(func(ctr *container) error {
-		for _, opt := range opts {
-			err := opt.apply(ctr)
-			if err != nil {
-				return errors.WithStack(err)
-			}
-		}
-		return nil
-	})
 }
 
 type containerConfig func(*container) error
@@ -185,4 +22,153 @@ func (c containerConfig) apply(ctr *container) error {
 	return c(ctr)
 }
 
-var _ Config = (*containerConfig)(nil)
+// Provide registers dependency injection providers in global scope.
+// Providers:
+// - Are called at most once (except module-scoped providers)
+// - Must be exported functions from non-internal packages
+// - Must have exported input/output types from non-internal packages
+// - Should have exported generic type parameters (not checked)
+func Provide(providers ...interface{}) Config {
+	return containerConfig(func(ctr *container) error {
+		return provide(ctr, nil, providers)
+	})
+}
+
+// ProvideInModule registers dependency injection providers in a specific module scope.
+// See Provide for provider requirements.
+func ProvideInModule(moduleName string, providers ...interface{}) Config {
+	return containerConfig(func(ctr *container) error {
+		if moduleName == "" {
+			return ErrEmptyModuleName
+		}
+		return provide(ctr, ctr.moduleKeyContext.createOrGetModuleKey(moduleName), providers)
+	})
+}
+
+// Invoke registers invoker functions to run in global scope after dependency graph configuration.
+// Invokers:
+// - Are called in registration order
+// - May only return error as output
+// - Have all inputs marked as optional
+// - Should nil-check all inputs
+// - Must be exported functions from non-internal packages
+// - Must have exported input types from non-internal packages
+// - Should have exported generic type parameters (not checked)
+func Invoke(invokers ...interface{}) Config {
+	return containerConfig(func(ctr *container) error {
+		return invoke(ctr, nil, invokers)
+	})
+}
+
+// InvokeInModule registers invoker functions to run in a specific module scope.
+// See Invoke for invoker requirements.
+func InvokeInModule(moduleName string, invokers ...interface{}) Config {
+	return containerConfig(func(ctr *container) error {
+		if moduleName == "" {
+			return ErrEmptyModuleName
+		}
+		return invoke(ctr, ctr.moduleKeyContext.createOrGetModuleKey(moduleName), invokers)
+	})
+}
+
+// BindInterface defines a global scope interface binding.
+// Example:
+//
+//	BindInterface(
+//	    "pkg/path.Duck",    // interface
+//	    "pkg/path.DuckImpl" // implementation
+//	)
+func BindInterface(inTypeName, outTypeName string) Config {
+	return containerConfig(func(ctr *container) error {
+		return bindInterface(ctr, inTypeName, outTypeName, "")
+	})
+}
+
+// BindInterfaceInModule defines a module-scoped interface binding.
+// Example:
+//
+//	BindInterfaceInModule(
+//	    "myModule",         // module name
+//	    "pkg/path.Duck",    // interface
+//	    "pkg/path.DuckImpl" // implementation
+//	)
+func BindInterfaceInModule(moduleName, inTypeName, outTypeName string) Config {
+	return containerConfig(func(ctr *container) error {
+		return bindInterface(ctr, inTypeName, outTypeName, moduleName)
+	})
+}
+
+// Supply registers concrete values directly into the container
+func Supply(values ...interface{}) Config {
+	loc := LocationFromCaller(1)
+	return containerConfig(func(ctr *container) error {
+		for _, v := range values {
+			if err := ctr.supply(reflect.ValueOf(v), loc); err != nil {
+				return errors.WithStack(err)
+			}
+		}
+		return nil
+	})
+}
+
+// Error registers an error that will cause container initialization to fail
+func Error(err error) Config {
+	return containerConfig(func(*container) error {
+		return errors.WithStack(err)
+	})
+}
+
+// Configs bundles multiple Config definitions into a single Config
+func Configs(configs ...Config) Config {
+	return containerConfig(func(ctr *container) error {
+		for _, cfg := range configs {
+			if err := cfg.apply(ctr); err != nil {
+				return errors.WithStack(err)
+			}
+		}
+		return nil
+	})
+}
+
+// Helper functions
+
+func provide(ctr *container, key *moduleKey, providers []interface{}) error {
+	for _, provider := range providers {
+		desc, err := extractProviderDescriptor(provider)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+		if _, err = ctr.addNode(&desc, key); err != nil {
+			return errors.WithStack(err)
+		}
+	}
+	return nil
+}
+
+func invoke(ctr *container, key *moduleKey, invokers []interface{}) error {
+	for _, invoker := range invokers {
+		desc, err := extractInvokerDescriptor(invoker)
+		if err != nil {
+			return errors.WithStack(err)
+		}
+		if err = ctr.addInvoker(&desc, key); err != nil {
+			return errors.WithStack(err)
+		}
+	}
+	return nil
+}
+
+func bindInterface(ctr *container, inTypeName, outTypeName, moduleName string) error {
+	var mk *moduleKey
+	if moduleName != "" {
+		mk = &moduleKey{name: moduleName}
+	}
+	
+	ctr.addBinding(interfaceBinding{
+		interfaceName: inTypeName,
+		implTypeName:  outTypeName,
+		moduleKey:     mk,
+	})
+	
+	return nil
+}
