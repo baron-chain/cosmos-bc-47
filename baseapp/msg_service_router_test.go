@@ -1,5 +1,5 @@
 package baseapp_test
-
+//BC MOD
 import (
 	"os"
 	"testing"
