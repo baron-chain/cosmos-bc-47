@@ -1,5 +1,5 @@
 package baseapp
-
+//BC MOD
 import (
 	"crypto/sha256"
 	"errors"
