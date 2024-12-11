@@ -1,5 +1,5 @@
 package config
-
+//BC MOD
 import (
 	"bytes"
 	"os"
