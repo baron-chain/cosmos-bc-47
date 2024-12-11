@@ -1,5 +1,5 @@
 package config_test
-
+//BC MOD
 import (
 	"bytes"
 	"fmt"
