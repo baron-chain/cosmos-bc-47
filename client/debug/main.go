@@ -1,5 +1,5 @@
 package debug
-
+//BC MOD
 import (
 	"encoding/base64"
 	"encoding/hex"
