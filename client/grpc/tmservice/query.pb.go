@@ -2,7 +2,7 @@
 // source: cosmos/base/tendermint/v1beta1/query.proto
 
 package tmservice
-
+//BC MOD
 import (
 	context "context"
 	fmt "fmt"
