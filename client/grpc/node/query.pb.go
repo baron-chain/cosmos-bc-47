@@ -2,7 +2,7 @@
 // source: cosmos/base/node/v1beta1/query.proto
 
 package node
-
+//BC MOD
 import (
 	context "context"
 	fmt "fmt"
