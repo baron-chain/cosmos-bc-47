@@ -1,5 +1,5 @@
 package flags_test
-
+//BC MOD
 import (
 	"testing"
 
