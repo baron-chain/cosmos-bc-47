@@ -1,5 +1,5 @@
 package flags
-
+//BC MOD
 import (
 	"fmt"
 	"strconv"
