@@ -1,5 +1,5 @@
 package input
-
+//BC MOD
 import (
 	"bufio"
 	"errors"
