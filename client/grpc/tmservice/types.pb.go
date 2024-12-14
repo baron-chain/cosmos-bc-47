@@ -2,7 +2,7 @@
 // source: cosmos/base/tendermint/v1beta1/types.proto
 
 package tmservice
-
+//BC MOD
 import (
 	fmt "fmt"
 	types "github.com/cometbft/cometbft/proto/tendermint/types"
