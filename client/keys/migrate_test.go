@@ -1,153 +1,186 @@
 package keys
 
 import (
-	"context"
-	"fmt"
-	"strings"
-	"testing"
+    "context"
+    "fmt"
+    "testing"
 
-	design99keyring "github.com/99designs/keyring"
-	"github.com/stretchr/testify/suite"
-
-	"github.com/cosmos/cosmos-sdk/client"
-	"github.com/cosmos/cosmos-sdk/client/flags"
-	clienttestutil "github.com/cosmos/cosmos-sdk/client/testutil"
-	"github.com/cosmos/cosmos-sdk/codec"
-	"github.com/cosmos/cosmos-sdk/crypto/keyring"
-	"github.com/cosmos/cosmos-sdk/crypto/keys/multisig"
-	"github.com/cosmos/cosmos-sdk/crypto/keys/secp256k1"
-	cryptotypes "github.com/cosmos/cosmos-sdk/crypto/types"
-	"github.com/cosmos/cosmos-sdk/testutil"
+    design99keyring "github.com/99designs/keyring"
+    "github.com/stretchr/testify/suite"
+    "github.com/baron-chain/cosmos-sdk/client"
+    "github.com/baron-chain/cosmos-sdk/client/flags"
+    clienttestutil "github.com/baron-chain/cosmos-sdk/client/testutil"
+    "github.com/baron-chain/cosmos-sdk/codec"
+    "github.com/baron-chain/cosmos-sdk/crypto/keyring"
+    "github.com/baron-chain/cosmos-sdk/crypto/keys/kyber"
+    "github.com/baron-chain/cosmos-sdk/crypto/keys/dilithium"
+    cryptotypes "github.com/baron-chain/cosmos-sdk/crypto/types"
+    "github.com/baron-chain/cosmos-sdk/testutil"
 )
 
 type setter interface {
-	SetItem(item design99keyring.Item) error
+    SetItem(item design99keyring.Item) error
 }
 
 type MigrateTestSuite struct {
-	suite.Suite
+    suite.Suite
 
-	dir     string
-	appName string
-	cdc     codec.Codec
-	priv    cryptotypes.PrivKey
-	pub     cryptotypes.PubKey
+    dir          string
+    appName      string
+    cdc          codec.Codec
+    kyberKey     cryptotypes.PrivKey
+    dilithiumKey cryptotypes.PrivKey
 }
 
 func (s *MigrateTestSuite) SetupSuite() {
-	s.dir = s.T().TempDir()
-	s.cdc = clienttestutil.MakeTestCodec(s.T())
-	s.appName = "cosmos"
-	s.priv = cryptotypes.PrivKey(secp256k1.GenPrivKey())
-	s.pub = s.priv.PubKey()
+    s.dir = s.T().TempDir()
+    s.cdc = clienttestutil.MakeTestCodec(s.T())
+    s.appName = "baron-chain"
+    s.kyberKey = kyber.GenPrivKey()
+    s.dilithiumKey = dilithium.GenPrivKey()
 }
 
-func (s *MigrateTestSuite) Test_runListAndShowCmd() {
-	// adding LegacyInfo item into keyring
-	multi := multisig.NewLegacyAminoPubKey(
-		1, []cryptotypes.PubKey{
-			s.pub,
-		},
-	)
-	legacyMultiInfo, err := keyring.NewLegacyMultiInfo(s.appName, multi)
-	s.Require().NoError(err)
-	serializedLegacyMultiInfo := keyring.MarshalInfo(legacyMultiInfo)
+func (s *MigrateTestSuite) TestMigrateToQuantumSafe() {
+    cmd := MigrateCommand()
+    cmd.Flags().AddFlagSet(Commands("home").PersistentFlags())
 
-	item := design99keyring.Item{
-		Key:         s.appName + ".info",
-		Data:        serializedLegacyMultiInfo,
-		Description: "SDK keyring version",
-	}
+    mockIn := testutil.ApplyMockIODiscardOutErr(cmd)
+    kb, err := keyring.New(s.appName, keyring.BackendTest, s.dir, mockIn, s.cdc)
+    s.Require().NoError(err)
 
-	// run test simd keys list - to see that the migrated key is there
-	cmd := ListKeysCmd()
-	cmd.Flags().AddFlagSet(Commands("home").PersistentFlags())
+    // Test migration to Kyber
+    s.Run("Migrate to Kyber", func() {
+        record, err := keyring.NewLocalRecord("kyber-test", s.kyberKey, s.kyberKey.PubKey())
+        s.Require().NoError(err)
+        
+        serialized, err := s.cdc.Marshal(record)
+        s.Require().NoError(err)
 
-	mockIn := testutil.ApplyMockIODiscardOutErr(cmd)
-	kb, err := keyring.New(s.appName, keyring.BackendTest, s.dir, mockIn, s.cdc)
-	s.Require().NoError(err)
+        item := design99keyring.Item{
+            Key:         "kyber-test",
+            Data:        serialized,
+            Description: "Kyber quantum-safe key",
+        }
 
-	setter, ok := kb.(setter)
-	s.Require().True(ok)
-	s.Require().NoError(setter.SetItem(item))
+        setter, ok := kb.(setter)
+        s.Require().True(ok)
+        s.Require().NoError(setter.SetItem(item))
 
-	clientCtx := client.Context{}.WithKeyring(kb)
-	ctx := context.WithValue(context.Background(), client.ClientContextKey, &clientCtx)
+        clientCtx := client.Context{}.WithKeyring(kb)
+        ctx := context.WithValue(context.Background(), client.ClientContextKey, &clientCtx)
 
-	cmd.SetArgs([]string{
-		fmt.Sprintf("--%s=%s", flags.FlagHome, s.dir),
-		fmt.Sprintf("--%s=false", flagListNames),
-	})
+        cmd.SetArgs([]string{
+            fmt.Sprintf("--%s=kyber", flagQuantumKey),
+            fmt.Sprintf("--%s=false", flagDryRun),
+        })
+        s.Require().NoError(cmd.ExecuteContext(ctx))
+    })
 
-	s.Require().NoError(cmd.ExecuteContext(ctx))
+    // Test migration to Dilithium
+    s.Run("Migrate to Dilithium", func() {
+        record, err := keyring.NewLocalRecord("dilithium-test", s.dilithiumKey, s.dilithiumKey.PubKey())
+        s.Require().NoError(err)
+        
+        serialized, err := s.cdc.Marshal(record)
+        s.Require().NoError(err)
 
-	// simd show n1 - to see that the migration worked
-	cmd = ShowKeysCmd()
-	cmd.SetArgs([]string{s.appName})
-	clientCtx = clientCtx.WithCodec(s.cdc)
-	ctx = context.WithValue(context.Background(), client.ClientContextKey, &clientCtx)
-	s.Require().NoError(cmd.ExecuteContext(ctx))
+        item := design99keyring.Item{
+            Key:         "dilithium-test",
+            Data:        serialized,
+            Description: "Dilithium quantum-safe key",
+        }
+
+        setter, ok := kb.(setter)
+        s.Require().True(ok)
+        s.Require().NoError(setter.SetItem(item))
+
+        clientCtx := client.Context{}.WithKeyring(kb)
+        ctx := context.WithValue(context.Background(), client.ClientContextKey, &clientCtx)
+
+        cmd.SetArgs([]string{
+            fmt.Sprintf("--%s=dilithium", flagQuantumKey),
+            fmt.Sprintf("--%s=false", flagDryRun),
+        })
+        s.Require().NoError(cmd.ExecuteContext(ctx))
+    })
 }
 
-func (s *MigrateTestSuite) Test_runMigrateCmdRecord() {
-	k, err := keyring.NewLocalRecord("test record", s.priv, s.pub)
-	s.Require().NoError(err)
-	serializedRecord, err := s.cdc.Marshal(k)
-	s.Require().NoError(err)
+func (s *MigrateTestSuite) TestDryRunMigration() {
+    cmd := MigrateCommand()
+    mockIn := testutil.ApplyMockIODiscardOutErr(cmd)
+    kb, err := keyring.New(s.appName, keyring.BackendTest, s.dir, mockIn, s.cdc)
+    s.Require().NoError(err)
 
-	item := design99keyring.Item{
-		Key:         s.appName,
-		Data:        serializedRecord,
-		Description: "SDK kerying version",
-	}
+    // Setup test key
+    record, err := keyring.NewLocalRecord("test-key", s.kyberKey, s.kyberKey.PubKey())
+    s.Require().NoError(err)
+    
+    serialized, err := s.cdc.Marshal(record)
+    s.Require().NoError(err)
 
-	cmd := MigrateCommand()
-	mockIn := strings.NewReader("")
-	kb, err := keyring.New(s.appName, keyring.BackendTest, s.dir, mockIn, s.cdc)
-	s.Require().NoError(err)
+    item := design99keyring.Item{
+        Key:         "test-key",
+        Data:        serialized,
+        Description: "Test key for dry run",
+    }
 
-	setter, ok := kb.(setter)
-	s.Require().True(ok)
-	s.Require().NoError(setter.SetItem(item))
+    setter, ok := kb.(setter)
+    s.Require().True(ok)
+    s.Require().NoError(setter.SetItem(item))
 
-	clientCtx := client.Context{}.WithKeyring(kb)
-	ctx := context.WithValue(context.Background(), client.ClientContextKey, &clientCtx)
-	s.Require().NoError(cmd.ExecuteContext(ctx))
+    clientCtx := client.Context{}.WithKeyring(kb)
+    ctx := context.WithValue(context.Background(), client.ClientContextKey, &clientCtx)
+
+    cmd.SetArgs([]string{
+        fmt.Sprintf("--%s=true", flagDryRun),
+        fmt.Sprintf("--%s=kyber", flagQuantumKey),
+    })
+    s.Require().NoError(cmd.ExecuteContext(ctx))
 }
 
-func (s *MigrateTestSuite) Test_runMigrateCmdLegacyMultiInfo() {
-	// adding LegacyInfo item into keyring
-	multi := multisig.NewLegacyAminoPubKey(
-		1, []cryptotypes.PubKey{
-			s.pub,
-		},
-	)
+func (s *MigrateTestSuite) TestListMigratedKeys() {
+    cmd := ListKeysCmd()
+    cmd.Flags().AddFlagSet(Commands("home").PersistentFlags())
 
-	legacyMultiInfo, err := keyring.NewLegacyMultiInfo(s.appName, multi)
-	s.Require().NoError(err)
-	serializedLegacyMultiInfo := keyring.MarshalInfo(legacyMultiInfo)
+    mockIn := testutil.ApplyMockIODiscardOutErr(cmd)
+    kb, err := keyring.New(s.appName, keyring.BackendTest, s.dir, mockIn, s.cdc)
+    s.Require().NoError(err)
 
-	item := design99keyring.Item{
-		Key:         s.appName,
-		Data:        serializedLegacyMultiInfo,
-		Description: "SDK kerying version",
-	}
+    // Add both types of quantum-safe keys
+    for _, tc := range []struct {
+        name string
+        key  cryptotypes.PrivKey
+    }{
+        {"kyber-key", s.kyberKey},
+        {"dilithium-key", s.dilithiumKey},
+    } {
+        record, err := keyring.NewLocalRecord(tc.name, tc.key, tc.key.PubKey())
+        s.Require().NoError(err)
+        
+        serialized, err := s.cdc.Marshal(record)
+        s.Require().NoError(err)
 
-	cmd := MigrateCommand()
-	mockIn := testutil.ApplyMockIODiscardOutErr(cmd)
+        item := design99keyring.Item{
+            Key:         tc.name,
+            Data:        serialized,
+            Description: "Quantum-safe key",
+        }
 
-	kb, err := keyring.New(s.appName, keyring.BackendTest, s.dir, mockIn, s.cdc)
-	s.Require().NoError(err)
+        setter, ok := kb.(setter)
+        s.Require().True(ok)
+        s.Require().NoError(setter.SetItem(item))
+    }
 
-	setter, ok := kb.(setter)
-	s.Require().True(ok)
-	s.Require().NoError(setter.SetItem(item))
+    clientCtx := client.Context{}.WithKeyring(kb)
+    ctx := context.WithValue(context.Background(), client.ClientContextKey, &clientCtx)
 
-	clientCtx := client.Context{}.WithKeyring(kb)
-	ctx := context.WithValue(context.Background(), client.ClientContextKey, &clientCtx)
-	s.Require().NoError(cmd.ExecuteContext(ctx))
+    cmd.SetArgs([]string{
+        fmt.Sprintf("--%s=%s", flags.FlagHome, s.dir),
+        fmt.Sprintf("--%s=true", flagShowAlgo),
+    })
+    s.Require().NoError(cmd.ExecuteContext(ctx))
 }
 
 func TestMigrateTestSuite(t *testing.T) {
-	suite.Run(t, new(MigrateTestSuite))
+    suite.Run(t, new(MigrateTestSuite))
 }
