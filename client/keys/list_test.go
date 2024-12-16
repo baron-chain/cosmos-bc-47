@@ -1,102 +1,169 @@
 package keys
 
 import (
-	"context"
-	"fmt"
-	"strings"
-	"testing"
+    "context"
+    "fmt"
+    "testing"
 
-	"gotest.tools/v3/assert"
-
-	"github.com/cosmos/cosmos-sdk/client"
-	"github.com/cosmos/cosmos-sdk/client/flags"
-	clienttestutil "github.com/cosmos/cosmos-sdk/client/testutil"
-	"github.com/cosmos/cosmos-sdk/crypto/hd"
-	"github.com/cosmos/cosmos-sdk/crypto/keyring"
-	"github.com/cosmos/cosmos-sdk/testutil"
-	clitestutil "github.com/cosmos/cosmos-sdk/testutil/cli"
-	"github.com/cosmos/cosmos-sdk/testutil/testdata"
-	sdk "github.com/cosmos/cosmos-sdk/types"
+    "github.com/stretchr/testify/assert"
+    "github.com/baron-chain/cosmos-sdk/client"
+    "github.com/baron-chain/cosmos-sdk/client/flags"
+    clienttestutil "github.com/baron-chain/cosmos-sdk/client/testutil"
+    "github.com/baron-chain/cosmos-sdk/crypto/keyring"
+    "github.com/baron-chain/cosmos-sdk/testutil"
+    clitestutil "github.com/baron-chain/cosmos-sdk/testutil/cli"
+    "github.com/baron-chain/cosmos-sdk/testutil/testdata"
+    sdk "github.com/baron-chain/cosmos-sdk/types"
 )
 
-func cleanupKeys(t *testing.T, kb keyring.Keyring, keys ...string) func() {
-	return func() {
-		for _, k := range keys {
-			if err := kb.Delete(k); err != nil {
-				t.Log("can't delete KB key ", k, err)
-			}
-		}
-	}
+func cleanupKeys(t *testing.T, kr keyring.Keyring, keys ...string) func() {
+    return func() {
+        for _, k := range keys {
+            err := kr.Delete(k)
+            if err != nil {
+                t.Logf("failed to delete key %s: %v", k, err)
+            }
+        }
+    }
 }
 
-func Test_runListCmd(t *testing.T) {
-	cmd := ListKeysCmd()
-	cmd.Flags().AddFlagSet(Commands("home").PersistentFlags())
+func TestListCmd(t *testing.T) {
+    cmd := ListKeysCmd()
+    cmd.Flags().AddFlagSet(Commands("home").PersistentFlags())
 
-	kbHome1 := t.TempDir()
-	kbHome2 := t.TempDir()
+    testCases := []struct {
+        name        string
+        args        []string
+        expectKeys  bool
+        expectAlgo  bool
+        wantErr     bool
+    }{
+        {
+            name: "list empty keyring",
+            args: []string{
+                fmt.Sprintf("--%s=false", flagListNames),
+            },
+            expectKeys: false,
+        },
+        {
+            name: "list with quantum keys",
+            args: []string{
+                fmt.Sprintf("--%s=false", flagListNames),
+            },
+            expectKeys: true,
+        },
+        {
+            name: "list names only",
+            args: []string{
+                fmt.Sprintf("--%s=true", flagListNames),
+            },
+            expectKeys: true,
+        },
+        {
+            name: "list with algorithms",
+            args: []string{
+                fmt.Sprintf("--%s=false", flagListNames),
+                fmt.Sprintf("--%s=true", flagShowAlgo),
+            },
+            expectKeys: true,
+            expectAlgo: true,
+        },
+    }
 
-	mockIn := testutil.ApplyMockIODiscardOutErr(cmd)
-	cdc := clienttestutil.MakeTestCodec(t)
-	kb, err := keyring.New(sdk.KeyringServiceName(), keyring.BackendTest, kbHome2, mockIn, cdc)
-	assert.NilError(t, err)
+    for _, tc := range testCases {
+        t.Run(tc.name, func(t *testing.T) {
+            kbHome := t.TempDir()
+            mockIn := testutil.ApplyMockIODiscardOutErr(cmd)
+            cdc := clienttestutil.MakeTestCodec(t)
 
-	clientCtx := client.Context{}.WithKeyring(kb)
-	ctx := context.WithValue(context.Background(), client.ClientContextKey, &clientCtx)
+            kb, err := keyring.New(sdk.KeyringServiceName(), keyring.BackendTest, kbHome, mockIn, cdc)
+            assert.NoError(t, err)
 
-	path := "" // sdk.GetConfig().GetFullBIP44Path()
-	_, err = kb.NewAccount("something", testdata.TestMnemonic, "", path, hd.Secp256k1)
-	assert.NilError(t, err)
+            // Add test quantum-safe keys if needed
+            if tc.expectKeys {
+                // Add Kyber test key
+                _, err = kb.NewAccount(
+                    "kyber-key",
+                    testdata.TestMnemonic,
+                    "",
+                    "", // No HD path for quantum keys
+                    "kyber",
+                )
+                assert.NoError(t, err)
 
-	t.Cleanup(cleanupKeys(t, kb, "something"))
+                // Add Dilithium test key
+                _, err = kb.NewAccount(
+                    "dilithium-key",
+                    testdata.TestMnemonic,
+                    "",
+                    "",
+                    "dilithium",
+                )
+                assert.NoError(t, err)
 
-	testData := []struct {
-		name    string
-		kbDir   string
-		wantErr bool
-	}{
-		{"keybase: empty", kbHome1, false},
-		{"keybase: w/key", kbHome2, false},
-	}
-	for _, tt := range testData {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			cmd.SetArgs([]string{
-				fmt.Sprintf("--%s=%s", flags.FlagHome, tt.kbDir),
-				fmt.Sprintf("--%s=false", flagListNames),
-			})
+                t.Cleanup(cleanupKeys(t, kb, "kyber-key", "dilithium-key"))
+            }
 
-			if err := cmd.ExecuteContext(ctx); (err != nil) != tt.wantErr {
-				t.Errorf("runListCmd() error = %v, wantErr %v", err, tt.wantErr)
-			}
+            clientCtx := client.Context{}.
+                WithKeyring(kb).
+                WithKeyringDir(kbHome)
+            ctx := context.WithValue(context.Background(), client.ClientContextKey, &clientCtx)
 
-			cmd.SetArgs([]string{
-				fmt.Sprintf("--%s=%s", flags.FlagHome, tt.kbDir),
-				fmt.Sprintf("--%s=true", flagListNames),
-			})
+            cmd.SetArgs(tc.args)
+            err = cmd.ExecuteContext(ctx)
 
-			if err := cmd.ExecuteContext(ctx); (err != nil) != tt.wantErr {
-				t.Errorf("runListCmd() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
-	}
+            if tc.wantErr {
+                assert.Error(t, err)
+                return
+            }
+
+            assert.NoError(t, err)
+        })
+    }
 }
 
-func Test_runListKeyTypeCmd(t *testing.T) {
-	cmd := ListKeyTypesCmd()
+func TestListKeyTypesCmd(t *testing.T) {
+    cmd := ListKeyTypesCmd()
+    kbHome := t.TempDir()
+    mockIn := testutil.ApplyMockIODiscardOutErr(cmd)
+    cdc := clienttestutil.MakeTestCodec(t)
 
-	cdc := clienttestutil.MakeTestCodec(t)
-	kbHome := t.TempDir()
-	mockIn := testutil.ApplyMockIODiscardOutErr(cmd)
+    kb, err := keyring.New(sdk.KeyringServiceName(), keyring.BackendTest, kbHome, mockIn, cdc)
+    assert.NoError(t, err)
 
-	kb, err := keyring.New(sdk.KeyringServiceName(), keyring.BackendTest, kbHome, mockIn, cdc)
-	assert.NilError(t, err)
+    clientCtx := client.Context{}.
+        WithKeyringDir(kbHome).
+        WithKeyring(kb)
 
-	clientCtx := client.Context{}.
-		WithKeyringDir(kbHome).
-		WithKeyring(kb)
+    out, err := clitestutil.ExecTestCLICmd(clientCtx, cmd, []string{})
+    assert.NoError(t, err)
 
-	out, err := clitestutil.ExecTestCLICmd(clientCtx, cmd, []string{})
-	assert.NilError(t, err)
-	assert.Assert(t, strings.Contains(out.String(), string(hd.Secp256k1Type)))
+    // Verify quantum-safe algorithms are listed
+    output := out.String()
+    assert.Contains(t, output, "kyber")
+    assert.Contains(t, output, "dilithium")
+}
+
+func TestKeyringOutput(t *testing.T) {
+    cmd := ListKeysCmd()
+    kbHome := t.TempDir()
+    mockIn := testutil.ApplyMockIODiscardOutErr(cmd)
+    cdc := clienttestutil.MakeTestCodec(t)
+
+    kb, err := keyring.New(sdk.KeyringServiceName(), keyring.BackendTest, kbHome, mockIn, cdc)
+    assert.NoError(t, err)
+
+    // Create test quantum keys
+    _, err = kb.NewAccount("test-kyber", testdata.TestMnemonic, "", "", "kyber")
+    assert.NoError(t, err)
+    t.Cleanup(cleanupKeys(t, kb, "test-kyber"))
+
+    clientCtx := client.Context{}.
+        WithKeyring(kb).
+        WithOutput(cmd.OutOrStdout())
+
+    // Test JSON output
+    cmd.SetArgs([]string{"--output=json"})
+    err = cmd.ExecuteContext(context.WithValue(context.Background(), client.ClientContextKey, &clientCtx))
+    assert.NoError(t, err)
 }
