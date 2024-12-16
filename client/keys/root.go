@@ -1,60 +1,127 @@
 package keys
 
 import (
-	"github.com/cometbft/cometbft/libs/cli"
-	"github.com/spf13/cobra"
-
-	"github.com/cosmos/cosmos-sdk/client/flags"
+    "github.com/spf13/cobra"
+    "github.com/baron-chain/cometbft-bc/libs/cli"
+    "github.com/baron-chain/cosmos-sdk/client/flags"
 )
 
-// Commands registers a sub-tree of commands to interact with
-// local private key storage.
+const (
+    defaultOutputFormat = "text"
+    keyringCmdName     = "keys"
+)
+
+// Commands registers all key management commands for Baron Chain
 func Commands(defaultNodeHome string) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "keys",
-		Short: "Manage your application's keys",
-		Long: `Keyring management commands. These keys may be in any format supported by the
-Tendermint crypto library and can be used by light-clients, full nodes, or any other application
-that needs to sign with a private key.
+    cmd := &cobra.Command{
+        Use:   keyringCmdName,
+        Short: "Manage quantum-safe keys",
+        Long: `Baron Chain quantum-safe key management commands.
 
-The keyring supports the following backends:
+Available Key Types:
+    kyber       Post-quantum key encapsulation mechanism (KEM)
+    dilithium   Post-quantum digital signature algorithm
 
-    os          Uses the operating system's default credentials store.
-    file        Uses encrypted file-based keystore within the app's configuration directory.
-                This keyring will request a password each time it is accessed, which may occur
-                multiple times in a single command resulting in repeated password prompts.
-    kwallet     Uses KDE Wallet Manager as a credentials management application.
-    pass        Uses the pass command line utility to store and retrieve keys.
-    test        Stores keys insecurely to disk. It does not prompt for a password to be unlocked
-                and it should be use only for testing purposes.
+Supported Keyring Backends:
+    os          Operating system's secure credential store
+    file        Encrypted file-based keystore in app's config directory
+    kwallet     KDE Wallet Manager (requires external setup)
+    pass        Unix pass command line utility (requires GnuPG)
+    test        Insecure disk storage (testing only)
 
-kwallet and pass backends depend on external tools. Refer to their respective documentation for more
-information:
-    KWallet     https://github.com/KDE/kwallet
-    pass        https://www.passwordstore.org/
+For external backend setup:
+    KWallet: https://github.com/KDE/kwallet
+    Pass:    https://www.passwordstore.org/
+    GnuPG:   https://gnupg.org/
 
-The pass backend requires GnuPG: https://gnupg.org/
-`,
-	}
+Note: File backend will prompt for password on each access.`,
+    }
 
-	cmd.AddCommand(
-		MnemonicKeyCommand(),
-		AddKeyCommand(),
-		ExportKeyCommand(),
-		ImportKeyCommand(),
-		ImportKeyHexCommand(),
-		ListKeysCmd(),
-		ListKeyTypesCmd(),
-		ShowKeysCmd(),
-		DeleteKeyCommand(),
-		RenameKeyCommand(),
-		ParseKeyStringCommand(),
-		MigrateCommand(),
-	)
+    // Add key management commands
+    cmd.AddCommand(
+        // Key Generation
+        MnemonicKeyCommand(),
+        AddKeyCommand(),
+        
+        // Key Import/Export
+        ImportKeyCommand(),
+        ImportKeyHexCommand(),
+        ExportKeyCommand(),
+        
+        // Key Management
+        ListKeysCmd(),
+        ShowKeysCmd(),
+        RenameKeyCommand(),
+        DeleteKeyCommand(),
+        
+        // Utility Commands
+        ListKeyTypesCmd(),
+        ParseKeyStringCommand(),
+        MigrateCommand(),
+    )
 
-	cmd.PersistentFlags().String(flags.FlagHome, defaultNodeHome, "The application home directory")
-	cmd.PersistentFlags().String(cli.OutputFlag, "text", "Output format (text|json)")
-	flags.AddKeyringFlags(cmd.PersistentFlags())
+    // Add persistent flags
+    addPersistentFlags(cmd, defaultNodeHome)
 
-	return cmd
+    return cmd
+}
+
+func addPersistentFlags(cmd *cobra.Command, defaultNodeHome string) {
+    persistentFlags := cmd.PersistentFlags()
+
+    persistentFlags.String(
+        flags.FlagHome,
+        defaultNodeHome,
+        "Application home directory for key storage",
+    )
+
+    persistentFlags.String(
+        cli.OutputFlag,
+        defaultOutputFormat,
+        "Output format (text|json)",
+    )
+
+    // Add keyring-specific flags
+    flags.AddKeyringFlags(persistentFlags)
+
+    // Add quantum-safe specific flags
+    addQuantumSafeFlags(persistentFlags)
+}
+
+func addQuantumSafeFlags(flags *pflag.FlagSet) {
+    flags.String(
+        flagKeyAlgorithm,
+        defaultAlgorithm,
+        "Quantum-safe algorithm (kyber|dilithium)",
+    )
+    
+    flags.Int(
+        flagEntropySize,
+        defaultEntropySize,
+        "Entropy size in bits for quantum-safe key generation",
+    )
+
+    flags.Bool(
+        flagForceQuantum,
+        true,
+        "Enforce quantum-safe key generation",
+    )
+}
+
+// GetCommands returns all available key commands
+func GetCommands() []*cobra.Command {
+    return []*cobra.Command{
+        MnemonicKeyCommand(),
+        AddKeyCommand(),
+        ImportKeyCommand(),
+        ImportKeyHexCommand(),
+        ExportKeyCommand(),
+        ListKeysCmd(),
+        ShowKeysCmd(),
+        RenameKeyCommand(),
+        DeleteKeyCommand(),
+        ListKeyTypesCmd(),
+        ParseKeyStringCommand(),
+        MigrateCommand(),
+    }
 }
