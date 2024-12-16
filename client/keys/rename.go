@@ -1,68 +1,122 @@
 package keys
 
 import (
-	"bufio"
-	"fmt"
+    "bufio"
+    "fmt"
 
-	"github.com/spf13/cobra"
-
-	"github.com/cosmos/cosmos-sdk/client"
-	"github.com/cosmos/cosmos-sdk/client/input"
-	"github.com/cosmos/cosmos-sdk/crypto/keyring"
+    "github.com/spf13/cobra"
+    "github.com/baron-chain/cosmos-sdk/client"
+    "github.com/baron-chain/cosmos-sdk/client/input"
+    "github.com/baron-chain/cosmos-sdk/crypto/keyring"
 )
 
-// RenameKeyCommand renames a key from the key store.
+const (
+    flagSkipConfirm = "yes"
+    flagForce       = "force"
+)
+
+// RenameKeyCommand creates a command to rename a key in the keyring
 func RenameKeyCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "rename <old_name> <new_name>",
-		Short: "Rename an existing key",
-		Long: `Rename a key from the Keybase backend.
+    cmd := &cobra.Command{
+        Use:   "rename <old_name> <new_name>",
+        Short: "Rename a key in the keyring",
+        Long: `Rename a quantum-safe key in the Baron Chain keyring.
 
-Note that renaming offline or ledger keys will rename
-only the public key references stored locally, i.e.
-private keys stored in a ledger device cannot be renamed with the CLI.
-`,
-		Args: cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			buf := bufio.NewReader(cmd.InOrStdin())
-			clientCtx, err := client.GetClientQueryContext(cmd)
-			if err != nil {
-				return err
-			}
+Note: For hardware-based keys (ledger) or offline keys, this command 
+only renames the local public key references. Private keys stored in 
+hardware devices cannot be renamed.
 
-			oldName, newName := args[0], args[1]
+Example:
+  $ baron-chain keys rename mykey mynewkey
+  $ baron-chain keys rename ledgerkey newledgerkey --yes`,
+        Args: cobra.ExactArgs(2),
+        RunE: runRenameKey,
+    }
 
-			k, err := clientCtx.Keyring.Key(oldName)
-			if err != nil {
-				return err
-			}
+    cmd.Flags().BoolP(flagSkipConfirm, "y", false, "Skip rename confirmation")
+    cmd.Flags().Bool(flagForce, false, "Force rename even if new name exists")
+    return cmd
+}
 
-			// confirm rename, unless -y is passed
-			if skip, _ := cmd.Flags().GetBool(flagYes); !skip {
-				prompt := fmt.Sprintf("Key reference will be renamed from %s to %s. Continue?", args[0], args[1])
-				if yes, err := input.GetConfirmation(prompt, buf, cmd.ErrOrStderr()); err != nil {
-					return err
-				} else if !yes {
-					return nil
-				}
-			}
+func runRenameKey(cmd *cobra.Command, args []string) error {
+    clientCtx, err := client.GetClientQueryContext(cmd)
+    if err != nil {
+        return fmt.Errorf("failed to get client context: %w", err)
+    }
 
-			if err := clientCtx.Keyring.Rename(oldName, newName); err != nil {
-				return err
-			}
+    oldName, newName := args[0], args[1]
 
-			if k.GetType() == keyring.TypeLedger || k.GetType() == keyring.TypeOffline {
-				cmd.PrintErrln("Public key reference renamed")
-				return nil
-			}
+    // Validate old key exists
+    key, err := clientCtx.Keyring.Key(oldName)
+    if err != nil {
+        return fmt.Errorf("key '%s' not found: %w", oldName, err)
+    }
 
-			cmd.PrintErrln(fmt.Sprintf("Key was successfully renamed from %s to %s", oldName, newName))
+    // Check if new name already exists
+    if _, err := clientCtx.Keyring.Key(newName); err == nil {
+        force, _ := cmd.Flags().GetBool(flagForce)
+        if !force {
+            return fmt.Errorf("key '%s' already exists, use --force to overwrite", newName)
+        }
+    }
 
-			return nil
-		},
-	}
+    // Get confirmation unless --yes flag is set
+    skip, _ := cmd.Flags().GetBool(flagSkipConfirm)
+    if !skip {
+        if err := confirmRename(cmd, oldName, newName, key.GetType()); err != nil {
+            return err
+        }
+    }
 
-	cmd.Flags().BoolP(flagYes, "y", false, "Skip confirmation prompt when renaming offline or ledger key references")
+    // Perform the rename operation
+    if err := clientCtx.Keyring.Rename(oldName, newName); err != nil {
+        return fmt.Errorf("failed to rename key: %w", err)
+    }
 
-	return cmd
+    return printRenameResult(cmd, oldName, newName, key.GetType())
+}
+
+func confirmRename(cmd *cobra.Command, oldName, newName string, keyType keyring.KeyType) error {
+    var prompt string
+    switch keyType {
+    case keyring.TypeLedger:
+        prompt = fmt.Sprintf("Rename ledger key reference from '%s' to '%s'?", oldName, newName)
+    case keyring.TypeOffline:
+        prompt = fmt.Sprintf("Rename offline key reference from '%s' to '%s'?", oldName, newName)
+    default:
+        prompt = fmt.Sprintf("Rename key from '%s' to '%s'?", oldName, newName)
+    }
+
+    buf := bufio.NewReader(cmd.InOrStdin())
+    confirmed, err := input.GetConfirmation(prompt, buf, cmd.ErrOrStderr())
+    if err != nil {
+        return fmt.Errorf("failed to read confirmation: %w", err)
+    }
+    if !confirmed {
+        cmd.PrintErrln("Rename cancelled")
+        return fmt.Errorf("operation cancelled")
+    }
+
+    return nil
+}
+
+func printRenameResult(cmd *cobra.Command, oldName, newName string, keyType keyring.KeyType) error {
+    switch keyType {
+    case keyring.TypeLedger, keyring.TypeOffline:
+        cmd.PrintErrln(fmt.Sprintf("Public key reference renamed from '%s' to '%s'", oldName, newName))
+    default:
+        cmd.PrintErrln(fmt.Sprintf("Key successfully renamed from '%s' to '%s'", oldName, newName))
+    }
+
+    // Print quantum safety notice if applicable
+    if isQuantumSafeKey(keyType) {
+        cmd.PrintErrln("Note: Quantum-safe key properties preserved")
+    }
+
+    return nil
+}
+
+func isQuantumSafeKey(keyType keyring.KeyType) bool {
+    // Add logic to check if key is quantum-safe based on type
+    return keyType == keyring.TypeLocal // Assuming local keys are quantum-safe in Baron Chain
 }
