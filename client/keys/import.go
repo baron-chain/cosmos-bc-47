@@ -1,63 +1,102 @@
 package keys
 
 import (
-	"bufio"
-	"fmt"
-	"os"
+    "bufio"
+    "fmt"
+    "os"
 
-	"github.com/spf13/cobra"
-
-	"github.com/cosmos/cosmos-sdk/client"
-	"github.com/cosmos/cosmos-sdk/client/flags"
-	"github.com/cosmos/cosmos-sdk/client/input"
-	"github.com/cosmos/cosmos-sdk/crypto/hd"
-	"github.com/cosmos/cosmos-sdk/version"
+    "github.com/spf13/cobra"
+    "github.com/baron-chain/cosmos-sdk/client"
+    "github.com/baron-chain/cosmos-sdk/client/flags"
+    "github.com/baron-chain/cosmos-sdk/client/input"
+    "github.com/baron-chain/cosmos-sdk/crypto/keyring"
+    "github.com/baron-chain/cometbft-bc/crypto/kyber"
 )
 
-// ImportKeyCommand imports private keys from a keyfile.
+const (
+    flagKeyAlgorithm = "key-algorithm"
+    defaultAlgorithm = "kyber"
+)
+
 func ImportKeyCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "import <name> <keyfile>",
-		Short: "Import private keys into the local keybase",
-		Long:  "Import a ASCII armored private key into the local keybase.",
-		Args:  cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			clientCtx, err := client.GetClientQueryContext(cmd)
-			if err != nil {
-				return err
-			}
-			buf := bufio.NewReader(clientCtx.Input)
+    cmd := &cobra.Command{
+        Use:   "import <name> <keyfile>",
+        Short: "Import quantum-safe private keys",
+        Long:  "Import a quantum-safe private key (Kyber/Dilithium supported) into the local keybase",
+        Args:  cobra.ExactArgs(2),
+        RunE: func(cmd *cobra.Command, args []string) error {
+            clientCtx, err := client.GetClientQueryContext(cmd)
+            if err != nil {
+                return fmt.Errorf("failed to get client context: %w", err)
+            }
 
-			bz, err := os.ReadFile(args[1])
-			if err != nil {
-				return err
-			}
+            keyBytes, err := os.ReadFile(args[1])
+            if err != nil {
+                return fmt.Errorf("failed to read keyfile: %w", err)
+            }
 
-			passphrase, err := input.GetPassword("Enter passphrase to decrypt your key:", buf)
-			if err != nil {
-				return err
-			}
+            passphrase, err := input.GetPassword("Enter passphrase:", bufio.NewReader(clientCtx.Input))
+            if err != nil {
+                return fmt.Errorf("failed to read passphrase: %w", err)
+            }
 
-			return clientCtx.Keyring.ImportPrivKey(args[0], string(bz), passphrase)
-		},
-	}
+            algorithm, _ := cmd.Flags().GetString(flagKeyAlgorithm)
+            return importKey(clientCtx.Keyring, args[0], keyBytes, passphrase, algorithm)
+        },
+    }
+
+    cmd.Flags().String(flagKeyAlgorithm, defaultAlgorithm, "Quantum-safe algorithm (kyber/dilithium)")
+    return cmd
 }
 
-func ImportKeyHexCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "import-hex <name> <hex>",
-		Short: "Import private keys into the local keybase",
-		Long:  fmt.Sprintf("Import hex encoded private key into the local keybase.\nSupported key-types can be obtained with:\n%s list-key-types", version.AppName),
-		Args:  cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			clientCtx, err := client.GetClientQueryContext(cmd)
-			if err != nil {
-				return err
-			}
-			keyType, _ := cmd.Flags().GetString(flags.FlagKeyType)
-			return clientCtx.Keyring.ImportPrivKeyHex(args[0], args[1], keyType)
-		},
-	}
-	cmd.Flags().String(flags.FlagKeyType, string(hd.Secp256k1Type), "private key signing algorithm kind")
-	return cmd
+func importKey(kr keyring.Keyring, name string, keyBytes []byte, passphrase, algorithm string) error {
+    switch algorithm {
+    case "kyber":
+        return importKyberKey(kr, name, keyBytes, passphrase)
+    case "dilithium":
+        return importDilithiumKey(kr, name, keyBytes, passphrase)
+    default:
+        return fmt.Errorf("unsupported key algorithm: %s", algorithm)
+    }
+}
+
+func importKyberKey(kr keyring.Keyring, name string, keyBytes []byte, passphrase string) error {
+    key, err := kyber.DecryptPrivateKey(keyBytes, []byte(passphrase))
+    if err != nil {
+        return fmt.Errorf("failed to decrypt Kyber key: %w", err)
+    }
+
+    return kr.ImportPrivKey(name, key.String(), passphrase)
+}
+
+func ImportHexCommand() *cobra.Command {
+    cmd := &cobra.Command{
+        Use:   "import-hex <name> <hex>",
+        Short: "Import quantum-safe hex keys",
+        Long:  "Import hex encoded quantum-safe private key (Kyber/Dilithium supported)",
+        Args:  cobra.ExactArgs(2),
+        RunE: func(cmd *cobra.Command, args []string) error {
+            clientCtx, err := client.GetClientQueryContext(cmd)
+            if err != nil {
+                return fmt.Errorf("failed to get client context: %w", err)
+            }
+
+            algorithm, _ := cmd.Flags().GetString(flagKeyAlgorithm)
+            return importHexKey(clientCtx.Keyring, args[0], args[1], algorithm)
+        },
+    }
+
+    cmd.Flags().String(flagKeyAlgorithm, defaultAlgorithm, "Quantum-safe algorithm (kyber/dilithium)")
+    return cmd
+}
+
+func importHexKey(kr keyring.Keyring, name, hexKey, algorithm string) error {
+    switch algorithm {
+    case "kyber":
+        return kr.ImportPrivKeyHex(name, hexKey, "kyber")
+    case "dilithium":
+        return kr.ImportPrivKeyHex(name, hexKey, "dilithium")
+    default:
+        return fmt.Errorf("unsupported key algorithm: %s", algorithm)
+    }
 }
