@@ -1,15 +1,31 @@
 package keys
 
 import (
-	"testing"
-
-	"gotest.tools/v3/assert"
+    "testing"
+    "github.com/baron-chain/cometbft-bc/crypto/kyber"
+    "github.com/stretchr/testify/require"
 )
 
 func TestCommands(t *testing.T) {
-	rootCommands := Commands("home")
-	assert.Assert(t, rootCommands != nil)
+    t.Run("root commands initialization", func(t *testing.T) {
+        cmds := Commands("home")
+        require.NotNil(t, cmds)
+        require.Len(t, cmds.Commands(), 13) // Added PQC key command
+    })
 
-	// Commands are registered
-	assert.Equal(t, 12, len(rootCommands.Commands()))
+    t.Run("pqc key generation", func(t *testing.T) {
+        privKey, pubKey, err := kyber.GenerateKey()
+        require.NoError(t, err)
+        require.NotNil(t, privKey)
+        require.NotNil(t, pubKey)
+    })
+}
+
+func TestKeyValidation(t *testing.T) {
+    t.Run("key validation with quantum resistance", func(t *testing.T) {
+        cmds := Commands("home")
+        cmd := cmds.Find("validate")
+        require.NotNil(t, cmd)
+        require.Equal(t, "validate", cmd.Name())
+    })
 }
