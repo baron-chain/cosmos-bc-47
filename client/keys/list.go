@@ -1,70 +1,130 @@
 package keys
 
 import (
-	"github.com/spf13/cobra"
+    "fmt"
 
-	"github.com/cosmos/cosmos-sdk/client"
+    "github.com/spf13/cobra"
+    "github.com/baron-chain/cosmos-sdk/client"
+    "github.com/baron-chain/cosmos-sdk/crypto/keyring"
 )
 
-const flagListNames = "list-names"
+const (
+    flagListNames = "list-names"
+    flagShowAlgo  = "show-algorithm"
+)
 
-// ListKeysCmd lists all keys in the key store.
 func ListKeysCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "list",
-		Short: "List all keys",
-		Long: `Return a list of all public keys stored by this key manager
-along with their associated name and address.`,
-		RunE: runListCmd,
-	}
+    cmd := &cobra.Command{
+        Use:   "list",
+        Short: "List all quantum-safe keys",
+        Long:  `List all quantum-safe public keys stored in the keyring with their names, addresses and algorithms.`,
+        RunE:  runListCmd,
+    }
 
-	cmd.Flags().BoolP(flagListNames, "n", false, "List names only")
-	return cmd
+    cmd.Flags().BoolP(flagListNames, "n", false, "List names only")
+    cmd.Flags().BoolP(flagShowAlgo, "a", false, "Show key algorithm (kyber/dilithium)")
+    return cmd
 }
 
 func runListCmd(cmd *cobra.Command, _ []string) error {
-	clientCtx, err := client.GetClientQueryContext(cmd)
-	if err != nil {
-		return err
-	}
+    clientCtx, err := client.GetClientQueryContext(cmd)
+    if err != nil {
+        return fmt.Errorf("failed to get client context: %w", err)
+    }
 
-	records, err := clientCtx.Keyring.List()
-	if err != nil {
-		return err
-	}
+    records, err := clientCtx.Keyring.List()
+    if err != nil {
+        return fmt.Errorf("failed to list keys: %w", err)
+    }
 
-	if len(records) == 0 && clientCtx.OutputFormat == OutputFormatJSON {
-		cmd.Println("No records were found in keyring")
-		return nil
-	}
+    if len(records) == 0 {
+        cmd.Printf("No quantum-safe keys found in keyring\n")
+        return nil
+    }
 
-	if ok, _ := cmd.Flags().GetBool(flagListNames); !ok {
-		return printKeyringRecords(cmd.OutOrStdout(), records, clientCtx.OutputFormat)
-	}
+    showNames, _ := cmd.Flags().GetBool(flagListNames)
+    showAlgo, _ := cmd.Flags().GetBool(flagShowAlgo)
 
-	for _, k := range records {
-		cmd.Println(k.Name)
-	}
+    if showNames {
+        return printKeyNames(cmd, records)
+    }
 
-	return nil
+    return printKeyDetails(cmd, records, showAlgo, clientCtx.OutputFormat)
 }
 
-// ListKeyTypesCmd lists all key types.
-func ListKeyTypesCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "list-key-types",
-		Short: "List all key types",
-		Long:  `Return a list of all supported key types (also known as algos)`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			clientCtx, err := client.GetClientQueryContext(cmd)
-			if err != nil {
-				return err
-			}
+func printKeyNames(cmd *cobra.Command, records []*keyring.Record) error {
+    for _, k := range records {
+        cmd.Printf("%s\n", k.Name)
+    }
+    return nil
+}
 
-			cmd.Println("Supported key types/algos:")
-			keyring, _ := clientCtx.Keyring.SupportedAlgorithms()
-			cmd.Printf("%+q\n", keyring)
-			return nil
-		},
-	}
+func printKeyDetails(cmd *cobra.Command, records []*keyring.Record, showAlgo bool, format string) error {
+    if format == "json" {
+        return printJSON(cmd, records, showAlgo)
+    }
+
+    for _, k := range records {
+        if showAlgo {
+            cmd.Printf("Name: %s\nAddress: %s\nAlgorithm: %s\n\n", 
+                k.Name, k.GetAddress(), getKeyAlgorithm(k))
+        } else {
+            cmd.Printf("Name: %s\nAddress: %s\n\n", 
+                k.Name, k.GetAddress())
+        }
+    }
+    return nil
+}
+
+func getKeyAlgorithm(record *keyring.Record) string {
+    switch record.PubKey.Type() {
+    case "kyber":
+        return "Kyber (Quantum-Safe)"
+    case "dilithium":
+        return "Dilithium (Quantum-Safe)"
+    default:
+        return "Unknown"
+    }
+}
+
+func ListKeyTypesCmd() *cobra.Command {
+    return &cobra.Command{
+        Use:   "list-key-types",
+        Short: "List supported quantum-safe key types",
+        Long:  `Display all supported quantum-safe key algorithms in Baron Chain`,
+        RunE: func(cmd *cobra.Command, _ []string) error {
+            clientCtx, err := client.GetClientQueryContext(cmd)
+            if err != nil {
+                return fmt.Errorf("failed to get client context: %w", err)
+            }
+
+            cmd.Println("Supported quantum-safe key algorithms:")
+            cmd.Println("- kyber     (Post-Quantum Key Encapsulation)")
+            cmd.Println("- dilithium (Post-Quantum Digital Signatures)")
+            
+            return nil
+        },
+    }
+}
+
+func printJSON(cmd *cobra.Command, records []*keyring.Record, showAlgo bool) error {
+    type keyInfo struct {
+        Name      string `json:"name"`
+        Address   string `json:"address"`
+        Algorithm string `json:"algorithm,omitempty"`
+    }
+
+    var output []keyInfo
+    for _, k := range records {
+        info := keyInfo{
+            Name:    k.Name,
+            Address: k.GetAddress().String(),
+        }
+        if showAlgo {
+            info.Algorithm = getKeyAlgorithm(k)
+        }
+        output = append(output, info)
+    }
+
+    return printKeyringRecords(cmd.OutOrStdout(), output, "json")
 }
