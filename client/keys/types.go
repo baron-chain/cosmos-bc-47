@@ -1,101 +1,85 @@
 package keys
 
-// AddNewKey represents a request to create a new key with optional quantum-safe encryption
-type AddNewKey struct {
+import (
+    "github.com/baron-chain/baron-sdk/crypto/pqc"
+    "github.com/baron-chain/baron-sdk/types"
+)
+
+type KeyRequest struct {
     Name         string `json:"name"`
-    Password     string `json:"password"`
-    Mnemonic     string `json:"mnemonic"`
-    Account      int    `json:"account,string,omitempty"`
-    Index        int    `json:"index,string,omitempty"`
-    QuantumSafe  bool   `json:"quantum_safe,omitempty"`
-    KeyAlgorithm string `json:"key_algorithm,omitempty"` // kyber, dilithium, etc.
+    Password     string `json:"password,omitempty"`
+    Mnemonic     string `json:"mnemonic,omitempty"`
+    Account      uint32 `json:"account,omitempty"`
+    Index        uint32 `json:"index,omitempty"`
+    QuantumAlgo  string `json:"quantum_algo,omitempty"`
 }
 
-// NewAddNewKey creates a new quantum-safe key request with default settings
-func NewAddNewKey(name, password, mnemonic string, account, index int) AddNewKey {
-    return AddNewKey{
-        Name:         name,
-        Password:     password,
-        Mnemonic:     mnemonic,
-        Account:      account,
-        Index:        index,
-        QuantumSafe:  true,
-        KeyAlgorithm: "kyber",
+func NewKeyRequest(name, password string) *KeyRequest {
+    return &KeyRequest{
+        Name:        name,
+        Password:    password,
+        QuantumAlgo: pqc.DefaultAlgorithm,
+        Account:     0,
+        Index:       0,
     }
 }
 
-// RecoverKey represents a request to recover a key with quantum-safe support
-type RecoverKey struct {
-    Password     string `json:"password"`
-    Mnemonic     string `json:"mnemonic"`
-    Account      int    `json:"account,string,omitempty"`
-    Index        int    `json:"index,string,omitempty"`
-    QuantumSafe  bool   `json:"quantum_safe,omitempty"`
-    KeyAlgorithm string `json:"key_algorithm,omitempty"`
+type KeyRecovery struct {
+    Password    string `json:"password"`
+    Mnemonic    string `json:"mnemonic"`
+    Account     uint32 `json:"account,omitempty"`
+    Index       uint32 `json:"index,omitempty"`
+    QuantumAlgo string `json:"quantum_algo,omitempty"`
 }
 
-// NewRecoverKey creates a new quantum-safe key recovery request
-func NewRecoverKey(password, mnemonic string, account, index int) RecoverKey {
-    return RecoverKey{
-        Password:     password,
-        Mnemonic:     mnemonic,
-        Account:      account,
-        Index:        index,
-        QuantumSafe:  true,
-        KeyAlgorithm: "kyber",
+func NewKeyRecovery(password, mnemonic string) *KeyRecovery {
+    return &KeyRecovery{
+        Password:    password,
+        Mnemonic:    mnemonic,
+        QuantumAlgo: pqc.DefaultAlgorithm,
     }
 }
 
-// UpdateKeyReq represents a request to update key passwords with quantum-safe verification
-type UpdateKeyReq struct {
-    OldPassword string `json:"old_password"`
-    NewPassword string `json:"new_password"`
-    RotateKey   bool   `json:"rotate_key,omitempty"`    // Option to rotate quantum keys
-    ReEncrypt   bool   `json:"re_encrypt,omitempty"`    // Re-encrypt with new quantum algo
-    Algorithm   string `json:"algorithm,omitempty"`      // New quantum algorithm if rotating
+type KeyUpdate struct {
+    OldPass     string `json:"old_password"`
+    NewPass     string `json:"new_password"`
+    Rotate      bool   `json:"rotate,omitempty"`
+    NewAlgo     string `json:"new_algo,omitempty"`
 }
 
-// NewUpdateKeyReq creates a new key update request with quantum-safe options
-func NewUpdateKeyReq(old, new string) UpdateKeyReq {
-    return UpdateKeyReq{
-        OldPassword: old,
-        NewPassword: new,
-        RotateKey:   false,
-        ReEncrypt:   true,
-        Algorithm:   "kyber",
+func NewKeyUpdate(oldPass, newPass string) *KeyUpdate {
+    return &KeyUpdate{
+        OldPass:  oldPass,
+        NewPass:  newPass,
+        Rotate:   true,
+        NewAlgo:  pqc.DefaultAlgorithm,
     }
 }
 
-// DeleteKeyReq represents a request to delete a key with additional verification
-type DeleteKeyReq struct {
-    Password        string `json:"password"`
-    ConfirmDelete   bool   `json:"confirm_delete,omitempty"`
-    BackupRequired  bool   `json:"backup_required,omitempty"`
+type KeyDeletion struct {
+    Password string `json:"password"`
+    Confirm  bool   `json:"confirm"`
+    Backup   bool   `json:"backup"`
 }
 
-// NewDeleteKeyReq creates a new key deletion request with safety checks
-func NewDeleteKeyReq(password string) DeleteKeyReq {
-    return DeleteKeyReq{
-        Password:       password,
-        ConfirmDelete: true,
-        BackupRequired: true,
+func NewKeyDeletion(password string, requireBackup bool) *KeyDeletion {
+    return &KeyDeletion{
+        Password: password,
+        Confirm:  true,
+        Backup:   requireBackup,
     }
 }
 
-// KeyValidation represents key validation options
 type KeyValidation struct {
-    QuantumSafe     bool   `json:"quantum_safe"`
-    SecurityLevel   string `json:"security_level,omitempty"`    // high, medium, low
-    Algorithm       string `json:"algorithm"`
-    Version        string `json:"version,omitempty"`
+    QuantumAlgo string         `json:"quantum_algo"`
+    Security    types.Security `json:"security"`
+    Version     string         `json:"version"`
 }
 
-// NewKeyValidation creates default key validation settings
-func NewKeyValidation() KeyValidation {
-    return KeyValidation{
-        QuantumSafe:   true,
-        SecurityLevel: "high",
-        Algorithm:     "kyber",
-        Version:      "1.0",
+func NewKeyValidation() *KeyValidation {
+    return &KeyValidation{
+        QuantumAlgo: pqc.DefaultAlgorithm,
+        Security:    types.SecurityHigh,
+        Version:     types.CurrentVersion,
     }
 }
