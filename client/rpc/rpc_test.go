@@ -6,67 +6,75 @@ import (
 	"strconv"
 	"testing"
 
-	abci "github.com/cometbft/cometbft/abci/types"
 	"github.com/stretchr/testify/suite"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
-	"github.com/cosmos/cosmos-sdk/client/rpc"
-	clitestutil "github.com/cosmos/cosmos-sdk/testutil/cli"
-	"github.com/cosmos/cosmos-sdk/testutil/network"
-	"github.com/cosmos/cosmos-sdk/testutil/testdata"
-	grpctypes "github.com/cosmos/cosmos-sdk/types/grpc"
-	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
+	abci "github.com/baron-chain/cometbft-bc/abci/types"
+	"github.com/baron-chain/cosmos-bc-47/client/rpc"
+	"github.com/baron-chain/cosmos-bc-47/types/grpc"
+	"github.com/baron-chain/cosmos-bc-47/x/bank/types"
+	clitestutil "github.com/baron-chain/cosmos-bc-47/testutil/cli"
+	"github.com/baron-chain/cosmos-bc-47/testutil/network"
+	"github.com/baron-chain/cosmos-bc-47/testutil/testdata"
+)
+
+const (
+	minBlockHeight = 1
+	testMessage    = "hello"
 )
 
 type IntegrationTestSuite struct {
 	suite.Suite
-
 	network *network.Network
 }
 
 func (s *IntegrationTestSuite) SetupSuite() {
-	s.T().Log("setting up integration test suite")
-
 	cfg, err := network.DefaultConfigWithAppConfig(network.MinimumAppConfig())
-
 	s.NoError(err)
 
 	s.network, err = network.New(s.T(), s.T().TempDir(), cfg)
 	s.Require().NoError(err)
-
 	s.Require().NoError(s.network.WaitForNextBlock())
 }
 
 func (s *IntegrationTestSuite) TearDownSuite() {
-	s.T().Log("tearing down integration test suite")
 	s.network.Cleanup()
 }
 
 func (s *IntegrationTestSuite) TestStatusCommand() {
-	val0 := s.network.Validators[0]
+	validator := s.network.Validators[0]
 	cmd := rpc.StatusCommand()
 
-	out, err := clitestutil.ExecTestCLICmd(val0.ClientCtx, cmd, []string{})
+	out, err := clitestutil.ExecTestCLICmd(validator.ClientCtx, cmd, []string{})
 	s.Require().NoError(err)
-
-	// Make sure the output has the validator moniker.
-	s.Require().Contains(out.String(), fmt.Sprintf("\"moniker\":\"%s\"", val0.Moniker))
+	s.Require().Contains(out.String(), fmt.Sprintf("\"moniker\":\"%s\"", validator.Moniker))
 }
 
-func (s *IntegrationTestSuite) TestCLIQueryConn() {
+func (s *IntegrationTestSuite) TestGRPCQuery() {
 	var header metadata.MD
+	validator := s.network.Validators[0]
+	testClient := testdata.NewQueryClient(validator.ClientCtx)
 
-	testClient := testdata.NewQueryClient(s.network.Validators[0].ClientCtx)
-	res, err := testClient.Echo(context.Background(), &testdata.EchoRequest{Message: "hello"}, grpc.Header(&header))
+	res, err := testClient.Echo(
+		context.Background(),
+		&testdata.EchoRequest{Message: testMessage},
+		grpc.Header(&header),
+	)
 	s.NoError(err)
 
-	blockHeight := header.Get(grpctypes.GRPCBlockHeightHeader)
-	height, err := strconv.Atoi(blockHeight[0])
+	blockHeight, err := s.getBlockHeightFromHeader(header)
 	s.Require().NoError(err)
-	s.Require().GreaterOrEqual(height, 1) // at least the 1st block
+	s.Require().GreaterOrEqual(blockHeight, minBlockHeight)
+	s.Equal(testMessage, res.Message)
+}
 
-	s.Equal("hello", res.Message)
+func (s *IntegrationTestSuite) getBlockHeightFromHeader(header metadata.MD) (int, error) {
+	heightStr := header.Get(grpctypes.GRPCBlockHeightHeader)
+	if len(heightStr) == 0 {
+		return 0, fmt.Errorf("no block height in header")
+	}
+	return strconv.Atoi(heightStr[0])
 }
 
 func (s *IntegrationTestSuite) TestQueryABCIHeight() {
@@ -77,19 +85,19 @@ func (s *IntegrationTestSuite) TestQueryABCIHeight() {
 		expHeight int64
 	}{
 		{
-			name:      "non zero request height",
+			name:      "specified request height",
 			reqHeight: 3,
-			ctxHeight: 1, // query at height 1 or 2 would cause an error
+			ctxHeight: 1,
 			expHeight: 3,
 		},
 		{
-			name:      "empty request height - use context height",
+			name:      "use context height when request height is zero",
 			reqHeight: 0,
 			ctxHeight: 3,
 			expHeight: 3,
 		},
 		{
-			name:      "empty request height and context height - use latest height",
+			name:      "use latest height when both heights are zero",
 			reqHeight: 0,
 			ctxHeight: 0,
 			expHeight: 4,
@@ -99,22 +107,18 @@ func (s *IntegrationTestSuite) TestQueryABCIHeight() {
 	for _, tc := range testCases {
 		s.Run(tc.name, func() {
 			s.network.WaitForHeight(tc.expHeight)
-
-			val := s.network.Validators[0]
-
-			clientCtx := val.ClientCtx
-			clientCtx = clientCtx.WithHeight(tc.ctxHeight)
-
+			validator := s.network.Validators[0]
+			
+			clientCtx := validator.ClientCtx.WithHeight(tc.ctxHeight)
 			req := abci.RequestQuery{
 				Path:   fmt.Sprintf("store/%s/key", banktypes.StoreKey),
 				Height: tc.reqHeight,
-				Data:   banktypes.CreateAccountBalancesPrefix(val.Address),
+				Data:   banktypes.CreateAccountBalancesPrefix(validator.Address),
 				Prove:  true,
 			}
 
 			res, err := clientCtx.QueryABCI(req)
 			s.Require().NoError(err)
-
 			s.Require().Equal(tc.expHeight, res.Height)
 		})
 	}
