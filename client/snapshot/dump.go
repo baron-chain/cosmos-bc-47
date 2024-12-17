@@ -3,123 +3,187 @@ package snapshot
 import (
 	"archive/tar"
 	"compress/gzip"
-	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 
-	"github.com/cosmos/cosmos-sdk/server"
 	"github.com/spf13/cobra"
+	"github.com/baron-chain/cosmos-bc-47/server"
 )
 
-// DumpArchiveCmd returns a command to dump the snapshot as portable archive format
+const (
+	dumpCmdUse     = "dump <height> <format>"
+	dumpCmdShort   = "Dump Baron Chain snapshot as portable archive"
+	dumpCmdLong    = `Export a Baron Chain snapshot to a portable gzipped tar archive.
+The archive will contain the snapshot metadata and all associated chunk files.`
+	dumpCmdExample = `  # Dump snapshot at height 1000000 with format 1
+  barond snapshots dump 1000000 1
+
+  # Dump snapshot with custom output file
+  barond snapshots dump 1000000 1 -o custom_backup.tar.gz`
+
+	defaultFileMode = 0o644
+	flagOutput      = "output"
+	flagOutputShort = "o"
+)
+
+type snapshotDumper struct {
+	store     server.SnapshotStore
+	height    uint64
+	format    uint32
+	outputPath string
+}
+
 func DumpArchiveCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "dump <height> <format>",
-		Short: "Dump the snapshot as portable archive format",
-		Args:  cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := server.GetServerContextFromCmd(cmd)
-			snapshotStore, err := server.GetSnapshotStore(ctx.Viper)
-			if err != nil {
-				return err
-			}
-
-			output, err := cmd.Flags().GetString("output")
-			if err != nil {
-				return err
-			}
-
-			height, err := strconv.ParseUint(args[0], 10, 64)
-			if err != nil {
-				return err
-			}
-			format, err := strconv.ParseUint(args[1], 10, 32)
-			if err != nil {
-				return err
-			}
-
-			if output == "" {
-				output = fmt.Sprintf("%d-%d.tar.gz", height, format)
-			}
-
-			snapshot, err := snapshotStore.Get(height, uint32(format))
-			if err != nil {
-				return err
-			}
-
-			if snapshot == nil {
-				return errors.New("snapshot doesn't exist")
-			}
-
-			bz, err := snapshot.Marshal()
-			if err != nil {
-				return err
-			}
-
-			fp, err := os.Create(output)
-			if err != nil {
-				return err
-			}
-			defer fp.Close()
-
-			// since the chunk files are already compressed, we just use fastest compression here
-			gzipWriter, err := gzip.NewWriterLevel(fp, gzip.BestSpeed)
-			if err != nil {
-				return err
-			}
-			tarWriter := tar.NewWriter(gzipWriter)
-			if err := tarWriter.WriteHeader(&tar.Header{
-				Name: SnapshotFileName,
-				Mode: 0o644,
-				Size: int64(len(bz)),
-			}); err != nil {
-				return fmt.Errorf("failed to write snapshot header to tar: %w", err)
-			}
-			if _, err := tarWriter.Write(bz); err != nil {
-				return fmt.Errorf("failed to write snapshot to tar: %w", err)
-			}
-
-			for i := uint32(0); i < snapshot.Chunks; i++ {
-				path := snapshotStore.PathChunk(height, uint32(format), i)
-				file, err := os.Open(path)
-				if err != nil {
-					return fmt.Errorf("failed to open chunk file %s: %w", path, err)
-				}
-				defer file.Close()
-
-				st, err := file.Stat()
-				if err != nil {
-					return fmt.Errorf("failed to stat chunk file %s: %w", path, err)
-				}
-
-				if err := tarWriter.WriteHeader(&tar.Header{
-					Name: strconv.FormatUint(uint64(i), 10),
-					Mode: 0o644,
-					Size: st.Size(),
-				}); err != nil {
-					return fmt.Errorf("failed to write chunk header to tar: %w", err)
-				}
-
-				if _, err := io.Copy(tarWriter, file); err != nil {
-					return fmt.Errorf("failed to write chunk to tar: %w", err)
-				}
-			}
-
-			if err := tarWriter.Close(); err != nil {
-				return fmt.Errorf("failed to close tar writer: %w", err)
-			}
-
-			if err := gzipWriter.Close(); err != nil {
-				return fmt.Errorf("failed to close gzip writer: %w", err)
-			}
-
-			return fp.Close()
-		},
+		Use:     dumpCmdUse,
+		Short:   dumpCmdShort,
+		Long:    dumpCmdLong,
+		Example: dumpCmdExample,
+		Args:    cobra.ExactArgs(2),
+		RunE:    runDumpCmd,
 	}
 
-	cmd.Flags().StringP("output", "o", "", "output file")
-
+	cmd.Flags().StringP(flagOutput, flagOutputShort, "", "Output file path")
 	return cmd
+}
+
+func runDumpCmd(cmd *cobra.Command, args []string) error {
+	height, err := parseHeight(args[0])
+	if err != nil {
+		return fmt.Errorf("invalid height: %w", err)
+	}
+
+	format, err := parseFormat(args[1])
+	if err != nil {
+		return fmt.Errorf("invalid format: %w", err)
+	}
+
+	ctx := server.GetServerContextFromCmd(cmd)
+	store, err := server.GetSnapshotStore(ctx.Viper)
+	if err != nil {
+		return fmt.Errorf("failed to get snapshot store: %w", err)
+	}
+
+	outputPath, err := cmd.Flags().GetString(flagOutput)
+	if err != nil {
+		return err
+	}
+	if outputPath == "" {
+		outputPath = fmt.Sprintf("%d-%d.tar.gz", height, format)
+	}
+
+	dumper := &snapshotDumper{
+		store:      store,
+		height:     height,
+		format:     format,
+		outputPath: outputPath,
+	}
+
+	if err := dumper.dump(); err != nil {
+		return fmt.Errorf("failed to dump snapshot: %w", err)
+	}
+
+	cmd.Printf("Successfully dumped snapshot to %s\n", outputPath)
+	return nil
+}
+
+func (d *snapshotDumper) dump() error {
+	snapshot, err := d.store.Get(d.height, d.format)
+	if err != nil {
+		return fmt.Errorf("failed to get snapshot: %w", err)
+	}
+	if snapshot == nil {
+		return fmt.Errorf("snapshot at height %d format %d doesn't exist", d.height, d.format)
+	}
+
+	snapshotBytes, err := snapshot.Marshal()
+	if err != nil {
+		return fmt.Errorf("failed to marshal snapshot: %w", err)
+	}
+
+	file, err := os.Create(d.outputPath)
+	if err != nil {
+		return fmt.Errorf("failed to create output file: %w", err)
+	}
+	defer file.Close()
+
+	gzipWriter, err := gzip.NewWriterLevel(file, gzip.BestSpeed)
+	if err != nil {
+		return fmt.Errorf("failed to create gzip writer: %w", err)
+	}
+	defer gzipWriter.Close()
+
+	tarWriter := tar.NewWriter(gzipWriter)
+	defer tarWriter.Close()
+
+	if err := d.writeSnapshotMetadata(tarWriter, snapshotBytes); err != nil {
+		return err
+	}
+
+	if err := d.writeChunkFiles(tarWriter, snapshot.Chunks); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (d *snapshotDumper) writeSnapshotMetadata(tw *tar.Writer, data []byte) error {
+	header := &tar.Header{
+		Name: SnapshotFileName,
+		Mode: defaultFileMode,
+		Size: int64(len(data)),
+	}
+
+	if err := tw.WriteHeader(header); err != nil {
+		return fmt.Errorf("failed to write snapshot header: %w", err)
+	}
+
+	if _, err := tw.Write(data); err != nil {
+		return fmt.Errorf("failed to write snapshot data: %w", err)
+	}
+
+	return nil
+}
+
+func (d *snapshotDumper) writeChunkFiles(tw *tar.Writer, chunks uint32) error {
+	for i := uint32(0); i < chunks; i++ {
+		chunkPath := d.store.PathChunk(d.height, d.format, i)
+		
+		if err := d.writeChunkFile(tw, chunkPath, i); err != nil {
+			return fmt.Errorf("failed to write chunk %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+func (d *snapshotDumper) writeChunkFile(tw *tar.Writer, path string, index uint32) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("failed to open chunk file: %w", err)
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to stat chunk file: %w", err)
+	}
+
+	header := &tar.Header{
+		Name: strconv.FormatUint(uint64(index), 10),
+		Mode: defaultFileMode,
+		Size: info.Size(),
+	}
+
+	if err := tw.WriteHeader(header); err != nil {
+		return fmt.Errorf("failed to write chunk header: %w", err)
+	}
+
+	if _, err := io.Copy(tw, file); err != nil {
+		return fmt.Errorf("failed to write chunk data: %w", err)
+	}
+
+	return nil
 }
