@@ -2,89 +2,105 @@ package rpc
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 
 	"github.com/spf13/cobra"
-
-	"github.com/cometbft/cometbft/libs/bytes"
-	"github.com/cometbft/cometbft/p2p"
-	coretypes "github.com/cometbft/cometbft/rpc/core/types"
-
-	"github.com/cosmos/cosmos-sdk/client"
-	"github.com/cosmos/cosmos-sdk/client/flags"
-	cryptocodec "github.com/cosmos/cosmos-sdk/crypto/codec"
-	cryptotypes "github.com/cosmos/cosmos-sdk/crypto/types"
+	"github.com/baron-chain/cometbft-bc/libs/bytes"
+	"github.com/baron-chain/cometbft-bc/p2p"
+	coretypes "github.com/baron-chain/cometbft-bc/rpc/core/types"
+	"github.com/baron-chain/cosmos-bc-47/client"
+	"github.com/baron-chain/cosmos-bc-47/client/flags"
+	cryptocodec "github.com/baron-chain/cosmos-bc-47/crypto/codec"
+	cryptotypes "github.com/baron-chain/cosmos-bc-47/crypto/types"
 )
 
-// ValidatorInfo is info about the node's validator, same as Tendermint,
-// except that we use our own PubKey.
-type validatorInfo struct {
-	Address     bytes.HexBytes
-	PubKey      cryptotypes.PubKey
-	VotingPower int64
+const (
+	defaultNodeEndpoint = "tcp://localhost:26657"
+	flagNode           = "node"
+)
+
+type ValidatorInfo struct {
+	Address     bytes.HexBytes      `json:"address"`
+	PubKey      cryptotypes.PubKey  `json:"pub_key"`
+	VotingPower int64              `json:"voting_power"`
 }
 
-// ResultStatus is node's info, same as Tendermint, except that we use our own
-// PubKey.
-type resultStatus struct {
-	NodeInfo      p2p.DefaultNodeInfo
-	SyncInfo      coretypes.SyncInfo
-	ValidatorInfo validatorInfo
+type NodeStatus struct {
+	NodeInfo      p2p.DefaultNodeInfo `json:"node_info"`
+	SyncInfo      coretypes.SyncInfo  `json:"sync_info"`
+	ValidatorInfo ValidatorInfo       `json:"validator_info"`
 }
 
-// StatusCommand returns the command to return the status of the network.
 func StatusCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "status",
-		Short: "Query remote node for status",
+		Use:     "status",
+		Short:   "Query Baron Chain node status",
+		Example: "$ barond query status",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			clientCtx, err := client.GetClientQueryContext(cmd)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to get query context: %w", err)
 			}
 
-			status, err := getNodeStatus(clientCtx)
+			status, err := queryNodeStatus(clientCtx)
 			if err != nil {
 				return err
 			}
 
-			var pk cryptotypes.PubKey
-			// `status` has TM pubkeys, we need to convert them to our pubkeys.
-			if status.ValidatorInfo.PubKey != nil {
-				pk, err = cryptocodec.FromTmPubKeyInterface(status.ValidatorInfo.PubKey)
-				if err != nil {
-					return err
-				}
+			pubKey, err := convertValidatorPubKey(status)
+			if err != nil {
+				return err
 			}
-			statusWithPk := resultStatus{
+
+			nodeStatus := NodeStatus{
 				NodeInfo: status.NodeInfo,
 				SyncInfo: status.SyncInfo,
-				ValidatorInfo: validatorInfo{
+				ValidatorInfo: ValidatorInfo{
 					Address:     status.ValidatorInfo.Address,
-					PubKey:      pk,
+					PubKey:     pubKey,
 					VotingPower: status.ValidatorInfo.VotingPower,
 				},
 			}
 
-			output, err := clientCtx.LegacyAmino.MarshalJSON(statusWithPk)
+			output, err := json.MarshalIndent(nodeStatus, "", "  ")
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to marshal status: %w", err)
 			}
 
-			cmd.Println(string(output))
-			return nil
+			return clientCtx.PrintBytes(output)
 		},
 	}
 
-	cmd.Flags().StringP(flags.FlagNode, "n", "tcp://localhost:26657", "Node to connect to")
+	cmd.Flags().StringP(flagNode, "n", defaultNodeEndpoint, "Baron Chain node to connect to")
+	flags.AddQueryFlagsToCmd(cmd)
 
 	return cmd
 }
 
-func getNodeStatus(clientCtx client.Context) (*coretypes.ResultStatus, error) {
+func queryNodeStatus(clientCtx client.Context) (*coretypes.ResultStatus, error) {
 	node, err := clientCtx.GetNode()
 	if err != nil {
-		return &coretypes.ResultStatus{}, err
+		return nil, fmt.Errorf("failed to get node: %w", err)
 	}
 
-	return node.Status(context.Background())
+	status, err := node.Status(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("failed to query node status: %w", err)
+	}
+
+	return status, nil
+}
+
+func convertValidatorPubKey(status *coretypes.ResultStatus) (cryptotypes.PubKey, error) {
+	if status.ValidatorInfo.PubKey == nil {
+		return nil, nil
+	}
+
+	pubKey, err := cryptocodec.FromTmPubKeyInterface(status.ValidatorInfo.PubKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert validator public key: %w", err)
+	}
+
+	return pubKey, nil
 }
