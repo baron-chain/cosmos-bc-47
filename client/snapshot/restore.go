@@ -1,5 +1,5 @@
 package snapshot
-
+//BC MOD
 import (
 	"path/filepath"
 	"strconv"
