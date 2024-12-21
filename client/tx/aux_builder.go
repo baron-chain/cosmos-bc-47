@@ -1,5 +1,5 @@
 package tx
-
+//BC MOD
 import (
 	"github.com/cosmos/gogoproto/proto"
 
