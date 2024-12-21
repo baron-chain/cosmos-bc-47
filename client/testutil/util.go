@@ -1,5 +1,5 @@
 package testutil
-
+//BC MOD
 import (
 	"testing"
 
