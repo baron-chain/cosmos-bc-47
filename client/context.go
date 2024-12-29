@@ -1,5 +1,5 @@
 package client
-//BC MOD 
+//BC MOD //BC MOD 
 import (
 	"bufio"
 	"encoding/json"
