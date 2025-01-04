@@ -1,5 +1,5 @@
 package client
-
+//BC MOD 
 import (
 	"encoding/base64"
 
