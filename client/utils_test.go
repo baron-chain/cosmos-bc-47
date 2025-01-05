@@ -1,5 +1,5 @@
 package client_test
-//BC MOD //BC MOD 
+//BC MOD //BC MOD [ER:#1811] 
 import (
 	"testing"
 
